@@ -5,3 +5,4 @@ releases/
 .env
 daisy.env
 *.log
+assets/models/*.bin
