@@ -1,7 +1,7 @@
 {
   "name": "Daisy",
   "version": "1.5.1",
-  "description": "Daisy：面向中文用户的 macOS AI 语音助手",
+  "description": "Daisy：macOS AI 语音助手",
   "author": "Daisy",
   "main": "dist/main/index.js",
   "scripts": {
