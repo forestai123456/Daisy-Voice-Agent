@@ -1,38 +1,100 @@
-# Daisy 语音助手
+<p align="center">
+  <img src="assets/readme/daisy-hero.png" alt="Daisy — 极速语音交互智能体" width="720" />
+</p>
 
-> 开源的 macOS AI 语音助手。
+<h1 align="center">Daisy</h1>
 
-Daisy 通过全局快捷键或语音唤醒词来接收指令，能够使用你自己的 AI 与语音识别服务完成问答、系统控制、网页搜索、日程与提醒等任务。
+<p align="center">
+  <strong>为 macOS 而生的语音优先 AI 助手</strong>
+</p>
 
-## 功能
+<p align="center">
+  <a href="https://github.com/forestai123456/Daisy-Voice-Agent/releases">下载</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#能为你做什么">能力一览</a> ·
+  <a href="#隐私与安全">隐私与安全</a>
+</p>
 
-- 按住右侧 `Option` 键说话，松手自动发送
-- 可选的“嘿 Daisy”语音唤醒
-- 流式 AI 回复与中文语音播报
-- 本地快捷命令：打开或关闭应用、调节音量、媒体控制、打开网页等
-- macOS 系统工具：备忘录、提醒事项、日历、地图、天气、文件操作等
-- 悬浮球状态提示与对话历史
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-111827?logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/voice-first-1683ff" alt="Voice first" />
+  <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT License" />
+</p>
 
-## 下载与安装
+> 按住快捷键，说完松开。Daisy 把语音识别、AI 理解、系统操作和自然语音播报连成一次流畅的桌面交互。
 
-请在 [Releases](../../releases) 页面下载最新的 `Daisy-*.dmg`，打开后将 **Daisy** 拖到“应用程序”文件夹。
+## Daisy 是什么？
 
-本项目目前没有 Apple 开发者签名或公证。首次运行时，macOS 可能提示“无法验证开发者”：请在“应用程序”中按住 Control 键点击 Daisy，选择“打开”，再在确认框中点击“打开”；必要时可到“系统设置 → 隐私与安全性”中选择“仍要打开”。请只从本仓库的 Release 页面下载。
+Daisy 是运行在 macOS 菜单栏之外的轻量语音助手：一个始终可调用的悬浮球，负责把一句自然语言变成实际操作或简洁回答。它不依赖固定命令词；你可以像和助手说话一样让它搜索资料、控制电脑、处理日程，或直接完成日常桌面任务。
 
-## 首次配置
+所有模型与语音服务均由你自行配置。你的 API Key、Token 与个人设置只保存在本机，不会随仓库或安装包分发。
 
-安装后打开 Daisy 的设置页面，填入你自己的服务凭据：
+## 能为你做什么？
 
-1. DeepSeek API Key（用于 AI 回答）；
-2. 火山引擎 / 豆包 ASR 的 App ID 与 Access Token（用于语音识别）。
+| 场景 | Daisy 能做的事 |
+| --- | --- |
+| **自然语音对话** | 按住右侧 `Option` 键说话，松开自动发送；AI 流式生成回答，并由中文 TTS 自然播报。 |
+| **应用与窗口控制** | 打开、关闭或隐藏应用；发送快捷键；输入文本；调节音量；控制媒体播放；锁屏或息屏。 |
+| **站内搜索直达** | 直接打开常用站点的结果页，例如“打开 B 站搜索世界杯”“在夸克搜索 AI 新闻”“打开小宇宙搜索科技播客”。 |
+| **效率工具** | 创建与搜索备忘录、提醒事项和日历事件；查询天气、地图、时间、赛事；读写剪贴板。 |
+| **文件与内容处理** | 在授权范围内读取、创建、整理文件；处理文档与 PDF；下载公开视频或音频；搜索高清壁纸。 |
+| **本地状态反馈** | 悬浮球清晰展示聆听、思考、播报和空闲状态，减少“它到底有没有听到”的不确定感。 |
 
-这些配置仅保存在你本机的 Daisy 应用数据目录，不包含在本仓库或发布的安装包中。语音合成默认使用 Microsoft Edge TTS。
+### 你可以这样说
 
-首次使用时，按 macOS 提示授予麦克风、辅助功能和输入监控权限。语音唤醒功能还需要 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 的模型文件；将模型放到 `~/Models/whisper/`，或在设置中选择相应配置。
+```text
+打开 B 站搜索 Daisy 教程
+把音量调低一点
+明天上午十点提醒我给客户回电话
+北京明天的天气怎么样
+打开视频号
+把我刚复制的图片保存到桌面
+```
+
+其中，常见网站的“打开 / 在 ×× 搜索 ××”由本地规则直接路由，不必等待模型判断。当前覆盖内容社区、视频、短剧、小说、播客、财经、医疗、论文、招聘、出行、汽车、购物与开发者社区等常用服务。
+
+## 交互体验
+
+### 一按即说
+
+默认按住右侧 `Option` 键开始说话，松开后 Daisy 自动结束录音、提交识别结果并开始处理。也可在设置中开启“嘿 Daisy”唤醒词。
+
+### 快速反馈，而不是黑箱等待
+
+悬浮球会即时反馈当前阶段：聆听、思考、执行操作、语音播报或空闲。需要安静看结果时，可点击悬浮球中断当前播报。
+
+### 让网页搜索回到正确的网站
+
+“打开抖音搜索世界杯”不会退化为普通浏览器搜索；Daisy 会直接进入目标服务的站内搜索。对没有独立 macOS 应用的网站，例如视频号、红果短剧或夸克，Daisy 会直接打开其网页入口。
+
+## 快速开始
+
+### 1. 安装
+
+在 [Releases](https://github.com/forestai123456/Daisy-Voice-Agent/releases) 下载最新的 `Daisy-*.dmg`，打开后将 **Daisy** 拖入“应用程序”文件夹。
+
+当前发布包使用 ad-hoc 签名，未进行 Apple 公证。首次运行若被 macOS 拦截：在“应用程序”中按住 `Control` 点击 Daisy，选择“打开”，再在确认框中点击“打开”；必要时可前往“系统设置 → 隐私与安全性”选择“仍要打开”。请只从本仓库的 Release 页面获取安装包。
+
+### 2. 配置服务
+
+首次打开 Daisy，在设置界面填入你自己的服务凭据：
+
+1. **AI 对话模型**：DeepSeek 或兼容 OpenAI 接口的模型配置；
+2. **语音识别**：火山引擎 / 豆包 ASR 的 App ID 与 Access Token；
+3. **语音播报**：默认使用 Microsoft Edge TTS，可在设置中调整；
+4. **可选唤醒词**：使用“嘿 Daisy”时，按提示配置本地 `whisper.cpp` 模型文件。
+
+### 3. 授权 macOS 权限
+
+按系统提示授予 Daisy 必要权限：
+
+- 麦克风：采集语音；
+- 辅助功能与输入监控：控制应用、发送快捷键和输入文本；
+- 自动化相关权限：在你明确要求时操作备忘录、日历、提醒事项等系统应用。
 
 ## 从源码运行
 
-环境要求：macOS、Node.js 22 或更新版本，以及 npm。
+环境要求：macOS、Apple Silicon、Node.js 22 或更新版本，以及 npm。
 
 ```bash
 git clone https://github.com/forestai123456/Daisy-Voice-Agent.git
@@ -43,24 +105,39 @@ cp .env.example daisy.env
 npm run dev
 ```
 
-构建未签名 DMG：
+构建 DMG：
 
 ```bash
 npm run dist:mac
 ```
 
-产物会生成在 `releases/`。`daisy.env` 被 Git 忽略且明确排除在安装包外。
+产物会生成在 `releases/`。`daisy.env` 已被 Git 忽略，并明确排除在安装包之外。
+
+## 项目结构
+
+```text
+src/
+├── main/       # 语音会话、ASR、TTS、工具执行、快捷键与 macOS 控制
+├── preload/    # 主进程与渲染进程之间的受控通信层
+└── renderer/   # 悬浮球、音频采集与设置界面
+assets/         # 应用图标、本地工具与运行时资源
+```
+
+## 功能范围
+
+本仓库聚焦于基础的 macOS 语音助手体验：语音交互、系统控制、工具调用与本地站内搜索。屏幕视觉理解、持续长对话与独立文本展示面板不在此仓库的功能范围内。
 
 ## 隐私与安全
 
-- 本仓库不包含任何开发者 API Key、Access Token 或用户配置。
-- 请不要把自己的 `daisy.env` 上传到 GitHub 或发送给他人。
-- Daisy 可以按你的指令控制系统、访问文件或运行命令。请仅在你信任的设备上使用，并审阅 AI 执行的敏感操作。
-
-## 开源许可
-
-本项目采用 [MIT License](LICENSE) 开源。项目使用 Electron、whisper.cpp、yt-dlp 等第三方组件；各组件仍适用其各自的许可条款。
+- 仓库与 Release 包不包含开发者的 API Key、Access Token 或个人配置；
+- 请勿提交或分享自己的 `daisy.env`、日志和截图，其中可能包含敏感信息；
+- Daisy 可以按你的要求控制系统、访问文件或运行命令。请仅在可信设备上使用，并谨慎确认涉及文件删除、外发信息或终端命令的请求；
+- 这是一个面向个人桌面的工具，请自行评估所配置模型与第三方服务的隐私政策。
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request。请不要在 Issue、日志或 PR 中粘贴 API Key、Token 或个人隐私数据。
+欢迎提交 Issue 与 Pull Request。提交前请确认：不包含密钥、Token、个人日志、私有文件路径或截图中的隐私数据。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 发布。Electron、whisper.cpp、yt-dlp 及其他第三方组件仍适用其各自的许可证。
