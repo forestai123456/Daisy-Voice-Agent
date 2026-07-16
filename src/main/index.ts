@@ -458,7 +458,8 @@ function wakeAndStartListening(): void {
   showOrb();
   playSound("Purr");
 
-  asrSession = useWhisper ? new WhisperAsrSession() : new AsrSession();
+  // Hold-to-talk should end on shortcut release, not on a brief pause between words.
+  asrSession = useWhisper ? new WhisperAsrSession(false) : new AsrSession();
   asrSession.on("partial", (text) => {
     sendToFloatWindow(IPC_CHANNELS.ASR_PARTIAL, text);
   });
