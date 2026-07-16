@@ -35,6 +35,13 @@ const SILENT_ACTION_TOOLS = new Set([
   "get_clipboard_text",
 ]);
 
+export function getChatCompletionsUrl(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, "");
+  return /\/v1$/i.test(normalized)
+    ? `${normalized}/chat/completions`
+    : `${normalized}/v1/chat/completions`;
+}
+
 const INSPECTION_TOOLS = new Set([
   "list_directory",
   "read_file",
@@ -194,7 +201,7 @@ export class DeepSeekClient extends EventEmitter {
       log(`DeepSeekClient: all tools reached max calls, forcing final answer`);
     }
     this.abortController = new AbortController();
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+    const response = await fetch(getChatCompletionsUrl(this.baseUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

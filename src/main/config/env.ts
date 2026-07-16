@@ -140,6 +140,26 @@ export function getBundledBin(name: string): string {
   return name; // fallback to PATH
 }
 
+export function getWhisperBackendName(cpuModel = os.cpus()[0]?.model || ""): string | null {
+  if (/Apple M1\b/i.test(cpuModel)) return "libggml-cpu-apple_m1.so";
+  if (/Apple M[23]\b/i.test(cpuModel)) return "libggml-cpu-apple_m2_m3.so";
+  if (/Apple M\d+\b/i.test(cpuModel)) return "libggml-cpu-apple_m4.so";
+  return null;
+}
+
+export function getWhisperExecutionEnv(cliPath = getBundledBin("whisper-cli")): NodeJS.ProcessEnv {
+  const backendName = getWhisperBackendName();
+  if (!backendName || !path.isAbsolute(cliPath)) return process.env;
+
+  const backendPath = path.resolve(path.dirname(cliPath), "..", "lib", backendName);
+  if (!fs.existsSync(backendPath)) return process.env;
+
+  return {
+    ...process.env,
+    GGML_BACKEND_PATH: backendPath,
+  };
+}
+
 export function isAsrConfigured(): boolean {
   return Boolean(config.asr.appId && config.asr.accessToken);
 }

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { log } from "../utils/logger";
-import { getWhisperModelPath, getBundledBin } from "../config/env";
+import { getWhisperModelPath, getBundledBin, getWhisperExecutionEnv } from "../config/env";
 
 const execFileAsync = promisify(execFile);
 
@@ -162,6 +162,7 @@ export class WakeWordMonitor extends EventEmitter {
         "--prompt", "Hey Daisy",
         "-sns",
       ], {
+        env: getWhisperExecutionEnv(WHISPER_CLI),
         timeout: 10000,
         maxBuffer: 1024 * 1024,
       });

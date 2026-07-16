@@ -6,7 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { log } from "../utils/logger";
 import { VAD } from "../wakeword/monitor";
-import { getWhisperModelPath, getBundledBin } from "../config/env";
+import { getWhisperModelPath, getBundledBin, getWhisperExecutionEnv } from "../config/env";
 
 const execFileAsync = promisify(execFile);
 
@@ -113,6 +113,7 @@ export class WhisperAsrSession extends EventEmitter {
         "--prompt", "Daisy, 黛西",
         "-sns",
       ], {
+        env: getWhisperExecutionEnv(WHISPER_CLI),
         timeout: 15000,
         maxBuffer: 1024 * 1024,
       });
