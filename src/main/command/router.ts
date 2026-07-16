@@ -395,7 +395,7 @@ function findSiteSearchProvider(name: string): SiteSearchProvider | null {
 export function parseKnownSiteSearch(text: string): KnownSiteSearch | null {
   const normalized = text.trim().replace(/[\s,，。！!？?、~]+$/, "");
   const match = normalized.match(new RegExp(
-    `^(?:帮我|麻烦|请)?\\s*(?:(?:打开|启动|开启|运行|开一下)\\s*)?(?:在\\s*)?(${SITE_SEARCH_ALIAS_PATTERN})\\s*(?:网站|官网)?\\s*(?:上|里|中)?\\s*[，,、]?\\s*(?:搜索|搜)\\s*(?:一下)?\\s*(.+)$`,
+    `^(?:帮我|麻烦|请)?\\s*(?:(?:在|用)?\\s*浏览器\\s*(?:里|中|上)?\\s*)?(?:(?:打开|启动|开启|运行|开一下|进入|访问)\\s*)?(?:在\\s*)?(${SITE_SEARCH_ALIAS_PATTERN})\\s*(?:网站|官网)?\\s*(?:上|里|中)?\\s*[，,、]?\\s*(?:(?:然后|再|并且|并)\\s*)?(?:搜索|搜)\\s*(?:一下)?\\s*(.+)$`,
     "i"
   ));
 
@@ -852,17 +852,17 @@ async function switchAudioOutput(target: string): Promise<CommandResult> {
 export async function tryLocalCommand(text: string): Promise<CommandResult> {
   const normalized = text.trim().replace(/[\s,，。！!？?、~]+$/, "");
 
-  // 如果包含"官网""网站""网页""网址"等关键词，不走本地应用路由，交给LLM用open_url处理
-  if (/官网|网站|网页|网址|首页|dot com|\.com|\.cn|\.net/i.test(normalized)) {
-    return { handled: false };
-  }
-
   // "打开抖音搜索世界杯" / "打开微博，搜索世界杯" must enter the
   // requested site's own search page, rather than becoming a generic web
   // search selected by the LLM.
   const knownSiteSearch = parseKnownSiteSearch(normalized);
   if (knownSiteSearch) {
     return await openKnownSiteSearch(knownSiteSearch);
+  }
+
+  // Other website requests still go through the LLM/open_url path.
+  if (/官网|网站|网页|网址|首页|dot com|\.com|\.cn|\.net/i.test(normalized)) {
+    return { handled: false };
   }
 
   // 打开/启动 应用
