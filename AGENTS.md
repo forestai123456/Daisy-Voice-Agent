@@ -99,7 +99,7 @@ WAKE_WORD=嘿 Daisy
 
 - **whisper.cpp**：`brew install whisper-cpp`，模型 `ggml-base.bin` 放在 `~/Models/whisper/`
 - **sudo-prompt 补丁**：`patches/sudo-prompt+9.2.1.patch` 修补 Node 24 兼容性
-- **MacKeyServer**：`node-global-key-listener/bin/MacKeyServer` 为 x86_64，Apple Silicon 需 Rosetta
+- **全局快捷键**：`uiohook-napi` 提供 Apple Silicon 原生键盘事件监听，无需 Rosetta
 
 ## macOS 权限
 

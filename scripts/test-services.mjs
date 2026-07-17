@@ -16,6 +16,7 @@ async function testTTS() {
   await tts.ttsPromise("你好，我是 diri。", filePath);
   const stats = fs.statSync(filePath);
   console.log(`TTS OK: ${filePath} (${stats.size} bytes)`);
+  fs.unlinkSync(filePath);
 }
 
 async function testLLM() {
@@ -29,7 +30,10 @@ async function testLLM() {
     return;
   }
 
-  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+  const endpoint = /\/v1$/i.test(baseUrl)
+    ? `${baseUrl}/chat/completions`
+    : `${baseUrl}/v1/chat/completions`;
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

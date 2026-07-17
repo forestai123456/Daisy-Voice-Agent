@@ -4,7 +4,7 @@ import os from "node:os";
 import https from "node:https";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { app, ipcMain, Menu, BrowserWindow } from "electron";
+import { app, ipcMain, Menu, BrowserWindow, systemPreferences } from "electron";
 import { autoUpdater } from "electron-updater";
 import { config, isAsrConfigured, isLlmConfigured, getWhisperModelPath, getBundledBin, WHISPER_MODELS, getWritableEnvPath } from "./config/env";
 import { IPC_CHANNELS } from "./ipc/channels";
@@ -44,6 +44,7 @@ let isSystemMutedByApp = false;
 let pausedChromeTabs: string[] = [];
 let ttsPlayer: EdgeTTSPlayer | null = null;
 let globalShortcut: GlobalShortcut | null = null;
+let shortcutPermissionTimer: NodeJS.Timeout | null = null;
 let conversationManager: ConversationManager | null = null;
 let autoHideTimer: NodeJS.Timeout | null = null;
 let safetyNetTimer: NodeJS.Timeout | null = null;
@@ -218,24 +219,41 @@ function setupAudio(): void {
 
 function setupShortcut(): void {
   log("Setting up global shortcut");
-  globalShortcut = new GlobalShortcut();
+  const startListener = () => {
+    if (globalShortcut) return;
+    globalShortcut = new GlobalShortcut();
 
-  globalShortcut.on("captured", (keyName: string) => {
-    const win = getSettingsWindow();
-    if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
-      win.webContents.send(IPC_CHANNELS.SHORTCUT_CAPTURED, { keyName });
-    }
-  });
+    globalShortcut.on("captured", (keyName: string) => {
+      const win = getSettingsWindow();
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(IPC_CHANNELS.SHORTCUT_CAPTURED, { keyName });
+      }
+    });
 
-  globalShortcut.on("pressed", () => {
-    log("Shortcut pressed");
-    wakeAndStartListening();
-  });
+    globalShortcut.on("pressed", () => {
+      log("Shortcut pressed");
+      wakeAndStartListening();
+    });
 
-  globalShortcut.on("released", () => {
-    log("Shortcut released");
-    endListening();
-  });
+    globalShortcut.on("released", () => {
+      log("Shortcut released");
+      endListening();
+    });
+  };
+
+  if (process.platform === "darwin" && !systemPreferences.isTrustedAccessibilityClient(true)) {
+    log("GlobalShortcut: waiting for macOS Accessibility permission");
+    shortcutPermissionTimer = setInterval(() => {
+      if (!systemPreferences.isTrustedAccessibilityClient(false)) return;
+      if (shortcutPermissionTimer) clearInterval(shortcutPermissionTimer);
+      shortcutPermissionTimer = null;
+      log("GlobalShortcut: Accessibility permission granted");
+      startListener();
+    }, 1000);
+    return;
+  }
+
+  startListener();
 }
 
 function ensureConversation(): ConversationManager {
@@ -440,7 +458,8 @@ function wakeAndStartListening(): void {
   showOrb();
   playSound("Purr");
 
-  asrSession = useWhisper ? new WhisperAsrSession() : new AsrSession();
+  // Hold-to-talk should end on shortcut release, not on a brief pause between words.
+  asrSession = useWhisper ? new WhisperAsrSession(false) : new AsrSession();
   asrSession.on("partial", (text) => {
     sendToFloatWindow(IPC_CHANNELS.ASR_PARTIAL, text);
   });
@@ -1625,15 +1644,13 @@ function setupIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.WHISPER_STATUS, async (_event, modelName?: string) => {
     const modelPath = getWhisperModelPath(modelName);
-    let cliInstalled = false;
-    try {
-      await execAsync("which whisper-cli");
-      cliInstalled = true;
-    } catch { /* not installed */ }
+    const whisperCli = getBundledBin("whisper-cli");
+    let cliInstalled = whisperCli !== "whisper-cli" && fs.existsSync(whisperCli);
     if (!cliInstalled) {
       try {
-        cliInstalled = fs.existsSync("/opt/homebrew/bin/whisper-cli");
-      } catch { /* ignore */ }
+        await execAsync("which whisper-cli");
+        cliInstalled = true;
+      } catch { /* not installed */ }
     }
     return {
       cliInstalled,

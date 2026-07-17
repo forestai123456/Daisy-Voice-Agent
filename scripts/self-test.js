@@ -13,10 +13,15 @@ console.log("========== Daisy 设置项自测 ==========\n");
 
 // 1. daisy.env 读取
 console.log("[1] 读取 daisy.env...");
-const projectEnv = path.join(process.cwd(), "daisy.env");
-if (!fs.existsSync(projectEnv)) {
-  console.error("  ✗ daisy.env 不存在:", projectEnv);
+const envCandidates = [
+  path.join(process.cwd(), "daisy.env"),
+  path.join(os.homedir(), "Library", "Application Support", "Daisy", "daisy.env"),
+];
+const projectEnv = envCandidates.find((candidate) => fs.existsSync(candidate));
+if (!projectEnv) {
+  console.error("  ✗ daisy.env 不存在:", envCandidates.join("、"));
 } else {
+  console.log("  ✓ 配置文件:", projectEnv);
   const raw = fs.readFileSync(projectEnv, "utf-8");
   const kv = {};
   for (const line of raw.split("\n")) {
@@ -54,8 +59,30 @@ const modelName = "ggml-base.bin";
 const modelPath = path.join(modelDir, modelName);
 console.log(`  模型目录: ${modelDir} (${fs.existsSync(modelDir) ? "存在" : "不存在"})`);
 console.log(`  Base 模型: ${modelPath} (${fs.existsSync(modelPath) ? "存在" : "不存在"})`);
-const cliPath = "/opt/homebrew/bin/whisper-cli";
-console.log(`  whisper-cli: ${cliPath} (${fs.existsSync(cliPath) ? "已安装" : "未安装"})`);
+const cliCandidates = [
+  path.join(process.cwd(), "assets", "bin", "whisper-cli"),
+  "/Applications/Daisy.app/Contents/Resources/app.asar.unpacked/assets/bin/whisper-cli",
+  "/opt/homebrew/bin/whisper-cli",
+];
+const cliPath = cliCandidates.find((candidate) => fs.existsSync(candidate));
+console.log(`  whisper-cli: ${cliPath || "未找到"} (${cliPath ? "已安装" : "未安装"})`);
+
+const cpuModel = os.cpus()[0]?.model || "";
+const backendName = /Apple M1\b/i.test(cpuModel)
+  ? "libggml-cpu-apple_m1.so"
+  : /Apple M[23]\b/i.test(cpuModel)
+    ? "libggml-cpu-apple_m2_m3.so"
+    : /Apple M\d+\b/i.test(cpuModel)
+      ? "libggml-cpu-apple_m4.so"
+      : null;
+const backendPath = cliPath && backendName
+  ? path.resolve(path.dirname(cliPath), "..", "lib", backendName)
+  : null;
+console.log(`  CPU 后端: ${backendPath || "系统默认"} (${backendPath && fs.existsSync(backendPath) ? "可用" : "未找到或无需指定"})`);
+const ffmpegPath = require("ffmpeg-static");
+console.log(`  ffmpeg: ${ffmpegPath || "未找到"} (${ffmpegPath && fs.existsSync(ffmpegPath) ? "可用" : "未安装"})`);
+const switchAudioPath = path.join(process.cwd(), "assets", "bin", "SwitchAudioSource");
+console.log(`  SwitchAudioSource: ${switchAudioPath} (${fs.existsSync(switchAudioPath) ? "可用" : "未安装"})`);
 
 // 3. userData 路径
 console.log("\n[3] userData 目录...");

@@ -35,6 +35,13 @@ const SILENT_ACTION_TOOLS = new Set([
   "get_clipboard_text",
 ]);
 
+export function getChatCompletionsUrl(baseUrl: string): string {
+  const normalized = baseUrl.trim().replace(/\/+$/, "");
+  return /\/v1$/i.test(normalized)
+    ? `${normalized}/chat/completions`
+    : `${normalized}/v1/chat/completions`;
+}
+
 const INSPECTION_TOOLS = new Set([
   "list_directory",
   "read_file",
@@ -56,6 +63,31 @@ const CONTINUE_AFTER_TOOLS = new Set([
   "convert_document",
   "edit_pdf"
 ]);
+
+const SEQUENTIAL_ACTION_TOOLS = new Set([
+  "open_application",
+  "open_url",
+  "type_text",
+  "press_keys",
+]);
+
+const MAX_COMPOUND_ACTION_FOLLOW_UPS = 3;
+
+export function isCompoundActionRequest(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  if (/(?:然后|接着|随后|之后|并且|同时|再去|再来|再把)/.test(normalized)) return true;
+
+  const actionVerbs = normalized.match(/(?:打开|进入|访问|搜索|搜|输入|填写|点击|发送|播放|关闭)/g) || [];
+  return actionVerbs.length >= 2;
+}
+
+function latestUserMessage(messages: ChatMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") return messages[i].content || "";
+  }
+  return "";
+}
 
 function maxCallsForTool(name: string): number {
   return CONTINUE_AFTER_TOOLS.has(name) ? 20 : MAX_CALLS_PER_TOOL;
@@ -138,6 +170,7 @@ export class DeepSeekClient extends EventEmitter {
   private toolCallCounts = new Map<string, number>();
   private chatLoopCount = 0;
   private commandExecutionCounts = new Map<string, number>();
+  private compoundActionFollowUps = 0;
 
   constructor(existingMessages?: ChatMessage[]) {
     super();
@@ -168,6 +201,7 @@ export class DeepSeekClient extends EventEmitter {
     this.aborted = false;
     this.chatLoopCount = 0;
     this.commandExecutionCounts.clear();
+    this.compoundActionFollowUps = 0;
     try {
       await this.streamChat(this.conversation);
     } catch (error) {
@@ -194,7 +228,7 @@ export class DeepSeekClient extends EventEmitter {
       log(`DeepSeekClient: all tools reached max calls, forcing final answer`);
     }
     this.abortController = new AbortController();
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+    const response = await fetch(getChatCompletionsUrl(this.baseUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -334,7 +368,17 @@ export class DeepSeekClient extends EventEmitter {
 
         const hasInspection = toolCalls.some(tc => INSPECTION_TOOLS.has(tc.function.name));
         const hasContinueAfter = toolCalls.some(tc => CONTINUE_AFTER_TOOLS.has(tc.function.name));
-        if (hasInspection || hasContinueAfter) {
+        const needsCompoundActionFollowUp =
+          this.compoundActionFollowUps < MAX_COMPOUND_ACTION_FOLLOW_UPS &&
+          isCompoundActionRequest(latestUserMessage(this.conversation)) &&
+          toolCalls.some(tc => SEQUENTIAL_ACTION_TOOLS.has(tc.function.name));
+
+        if (needsCompoundActionFollowUp) {
+          this.compoundActionFollowUps++;
+          log(`DeepSeekClient: compound action remains eligible for follow-up (${this.compoundActionFollowUps}/${MAX_COMPOUND_ACTION_FOLLOW_UPS}). Continuing chat loop...`);
+        }
+
+        if (hasInspection || hasContinueAfter || needsCompoundActionFollowUp) {
           log(`DeepSeekClient: Silent tools need follow-up (inspection/continue-after). Continuing chat loop to let LLM verify and continue...`);
           toolAckEmitted = false;
           await this.streamChat(this.conversation);

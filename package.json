@@ -35,14 +35,15 @@
     "dotenv": "^16.5.0",
     "duck-duck-scrape": "^2.2.7",
     "electron-updater": "^6.8.9",
+    "ffmpeg-static": "^5.3.0",
     "framer-motion": "^12.42.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.42.2",
     "node-edge-tts": "^1.2.10",
-    "node-global-key-listener": "^0.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tailwindcss": "^4.3.2",
+    "uiohook-napi": "^1.5.5",
     "ws": "^8.21.0"
   },
   "build": {
@@ -61,12 +62,21 @@
       "assets/bin/**",
       "assets/lib/**",
       "assets/models/**",
-      "node_modules/node-global-key-listener/bin/**"
+      "node_modules/uiohook-napi/**",
+      "node_modules/ffmpeg-static/**"
     ],
     "dmg": {
       "contents": [
-        { "x": 140, "y": 200 },
-        { "x": 400, "y": 200, "type": "link", "path": "/Applications" }
+        {
+          "x": 140,
+          "y": 200
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "mac": {

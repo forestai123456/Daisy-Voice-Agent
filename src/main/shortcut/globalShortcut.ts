@@ -1,9 +1,9 @@
-import { GlobalKeyboardListener } from "node-global-key-listener";
+import { UiohookKey, uIOhook, type UiohookKeyboardEvent, type UiohookMouseEvent } from "uiohook-napi";
 import { EventEmitter } from "node:events";
 import { config } from "../config/env";
+import { log, logError } from "../utils/logger";
 
 export class GlobalShortcut extends EventEmitter {
-  private listener: GlobalKeyboardListener;
   private targetKeys: string[];
   private pressedKeys = new Set<string>();
   private isRecording = false;
@@ -13,10 +13,30 @@ export class GlobalShortcut extends EventEmitter {
   private capturePressedKeys = new Set<string>();
   private captureKeysInOrder: string[] = [];
   private pressedTimer: NodeJS.Timeout | null = null;
+  private listenerStarted = false;
+
+  private readonly handleKeyDown = (event: UiohookKeyboardEvent): void => {
+    const key = this.keyCodeToName(event.keycode);
+    if (key) this.handleInput(key, "DOWN");
+  };
+
+  private readonly handleKeyUp = (event: UiohookKeyboardEvent): void => {
+    const key = this.keyCodeToName(event.keycode);
+    if (key) this.handleInput(key, "UP");
+  };
+
+  private readonly handleMouseDown = (event: UiohookMouseEvent): void => {
+    const key = this.mouseButtonToName(event.button);
+    if (key) this.handleInput(key, "DOWN");
+  };
+
+  private readonly handleMouseUp = (event: UiohookMouseEvent): void => {
+    const key = this.mouseButtonToName(event.button);
+    if (key) this.handleInput(key, "UP");
+  };
 
   constructor() {
     super();
-    this.listener = new GlobalKeyboardListener();
     this.targetKeys = this.parseShortcut(config.shortcut.globalShortcut);
     this.setup();
   }
@@ -99,17 +119,38 @@ export class GlobalShortcut extends EventEmitter {
     return aliases[lower] || lower;
   }
 
-  private normalizeEmittedKey(name: string): string {
-    const standard = (name || "").toLowerCase().replace(/\s+/g, "");
-    if (standard === "leftalt") return "leftalt";
-    if (standard === "rightalt") return "rightalt";
-    if (standard === "leftcommand" || standard === "leftmeta") return "leftmeta";
-    if (standard === "rightcommand" || standard === "rightmeta") return "rightmeta";
-    if (standard === "leftcontrol") return "leftcontrol";
-    if (standard === "rightcontrol") return "rightcontrol";
-    if (standard === "leftshift") return "leftshift";
-    if (standard === "rightshift") return "rightshift";
-    return standard;
+  private keyCodeToName(keyCode: number): string | null {
+    const modifierNames = new Map<number, string>([
+      [UiohookKey.Alt, "leftalt"],
+      [UiohookKey.AltRight, "rightalt"],
+      [UiohookKey.Meta, "leftmeta"],
+      [UiohookKey.MetaRight, "rightmeta"],
+      [UiohookKey.Ctrl, "leftcontrol"],
+      [UiohookKey.CtrlRight, "rightcontrol"],
+      [UiohookKey.Shift, "leftshift"],
+      [UiohookKey.ShiftRight, "rightshift"],
+      [UiohookKey.Space, "space"],
+      [UiohookKey.Enter, "return"],
+      [UiohookKey.Escape, "escape"],
+      [UiohookKey.Tab, "tab"],
+      [UiohookKey.Backspace, "backspace"],
+      [UiohookKey.Delete, "delete"],
+    ]);
+    const modifierName = modifierNames.get(keyCode);
+    if (modifierName) return modifierName;
+
+    for (const [name, code] of Object.entries(UiohookKey)) {
+      if (code === keyCode) return name.toLowerCase();
+    }
+    return null;
+  }
+
+  private mouseButtonToName(button: unknown): string | null {
+    const buttonNumber = Number(button);
+    if (buttonNumber === 1) return "mouseleft";
+    if (buttonNumber === 2) return "mouseright";
+    if (buttonNumber === 3) return "mousemiddle";
+    return null;
   }
 
   private matchesShortcut(targetKeys: string[]): boolean {
@@ -147,71 +188,89 @@ export class GlobalShortcut extends EventEmitter {
   }
 
   private setup(): void {
-    this.listener.addListener((event) => {
-      const key = this.normalizeEmittedKey(event.name || "");
-      if (!key) return;
+    uIOhook.on("keydown", this.handleKeyDown);
+    uIOhook.on("keyup", this.handleKeyUp);
+    uIOhook.on("mousedown", this.handleMouseDown);
+    uIOhook.on("mouseup", this.handleMouseUp);
 
-      if (this.captureMode) {
-        if (event.state === "DOWN") {
-          if (!this.capturePressedKeys.has(key)) {
-            this.capturePressedKeys.add(key);
-            this.captureKeysInOrder.push(key);
-          }
-        } else if (event.state === "UP") {
-          this.capturePressedKeys.delete(key);
-          if (this.capturePressedKeys.size === 0 && this.captureKeysInOrder.length > 0) {
-            const displayName = this.captureKeysInOrder
-              .map((capturedKey) => this.keyNameToDisplayName(capturedKey))
-              .join("+");
-            this.captureMode = false;
-            this.captureKeysInOrder = [];
-            this.emit("captured", displayName);
-          }
-        }
-        return;
-      }
+    try {
+      uIOhook.start();
+      this.listenerStarted = true;
+      log("GlobalShortcut: native Apple Silicon listener started");
+    } catch (error) {
+      logError("GlobalShortcut: failed to start native listener", error);
+    }
+  }
 
-      if (event.state === "DOWN") {
-        if (this.releaseDebounceTimer) {
-          clearTimeout(this.releaseDebounceTimer);
-          this.releaseDebounceTimer = null;
+  private handleInput(key: string, state: "DOWN" | "UP"): void {
+    if (this.captureMode) {
+      if (state === "DOWN") {
+        if (!this.capturePressedKeys.has(key)) {
+          this.capturePressedKeys.add(key);
+          this.captureKeysInOrder.push(key);
         }
-        this.pressedKeys.add(key);
-
-        if (key !== "rightalt" && this.pressedTimer) {
-          clearTimeout(this.pressedTimer);
-          this.pressedTimer = null;
-        }
-
-        if (this.matchesTargetShortcut() && !this.isRecording) {
-          if (this.pressedTimer) clearTimeout(this.pressedTimer);
-          this.pressedTimer = setTimeout(() => {
-            this.pressedTimer = null;
-            this.isRecording = true;
-            this.emit("pressed");
-          }, 20);
-        }
-      } else if (event.state === "UP") {
-        if (this.shortcutContainsKey(this.targetKeys, key) && this.pressedTimer) {
-          clearTimeout(this.pressedTimer);
-          this.pressedTimer = null;
-        }
-        if (this.shortcutContainsKey(this.targetKeys, key) && this.isRecording) {
-          this.releaseDebounceTimer = setTimeout(() => {
-            this.isRecording = false;
-            this.pressedKeys.clear();
-            this.releaseDebounceTimer = null;
-            this.emit("released");
-          }, this.RELEASE_DEBOUNCE_MS);
-        } else {
-          this.pressedKeys.delete(key);
+      } else {
+        this.capturePressedKeys.delete(key);
+        if (this.capturePressedKeys.size === 0 && this.captureKeysInOrder.length > 0) {
+          const displayName = this.captureKeysInOrder
+            .map((capturedKey) => this.keyNameToDisplayName(capturedKey))
+            .join("+");
+          this.captureMode = false;
+          this.captureKeysInOrder = [];
+          this.emit("captured", displayName);
         }
       }
-    });
+      return;
+    }
+
+    if (state === "DOWN") {
+      if (this.releaseDebounceTimer) {
+        clearTimeout(this.releaseDebounceTimer);
+        this.releaseDebounceTimer = null;
+      }
+      this.pressedKeys.add(key);
+
+      if (key !== "rightalt" && this.pressedTimer) {
+        clearTimeout(this.pressedTimer);
+        this.pressedTimer = null;
+      }
+
+      if (this.matchesTargetShortcut() && !this.isRecording) {
+        if (this.pressedTimer) clearTimeout(this.pressedTimer);
+        this.pressedTimer = setTimeout(() => {
+          this.pressedTimer = null;
+          this.isRecording = true;
+          this.emit("pressed");
+        }, 20);
+      }
+      return;
+    }
+
+    if (this.shortcutContainsKey(this.targetKeys, key) && this.pressedTimer) {
+      clearTimeout(this.pressedTimer);
+      this.pressedTimer = null;
+    }
+    if (this.shortcutContainsKey(this.targetKeys, key) && this.isRecording) {
+      this.releaseDebounceTimer = setTimeout(() => {
+        this.isRecording = false;
+        this.pressedKeys.clear();
+        this.releaseDebounceTimer = null;
+        this.emit("released");
+      }, this.RELEASE_DEBOUNCE_MS);
+    } else {
+      this.pressedKeys.delete(key);
+    }
   }
 
   destroy(): void {
-    this.listener.kill();
+    uIOhook.off("keydown", this.handleKeyDown);
+    uIOhook.off("keyup", this.handleKeyUp);
+    uIOhook.off("mousedown", this.handleMouseDown);
+    uIOhook.off("mouseup", this.handleMouseUp);
+    if (this.listenerStarted) {
+      uIOhook.stop();
+      this.listenerStarted = false;
+    }
   }
 
   updateShortcut(shortcut: string): void {

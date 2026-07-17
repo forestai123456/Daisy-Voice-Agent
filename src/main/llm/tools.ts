@@ -61,7 +61,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "open_application",
-      description: "打开指定的 macOS 应用程序",
+      description: "打开指定的 macOS 本地应用程序。仅在最终目标是打开应用本身时使用；访问网站或网站内搜索应直接调用 open_url 打开最终 URL，不要先打开浏览器。",
       parameters: {
         type: "object",
         properties: {
@@ -115,7 +115,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "open_url",
-      description: "用系统默认浏览器打开指定网址/网页",
+      description: "用系统默认浏览器打开指定网址/网页。调用前应先构造能直接到达用户最终目标的完整 URL；网站内搜索应尽量包含搜索路径和关键词参数，而不是只打开网站首页。",
       parameters: {
         type: "object",
         properties: {

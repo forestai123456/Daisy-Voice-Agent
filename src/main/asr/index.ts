@@ -163,16 +163,17 @@ export class AsrSession extends EventEmitter {
     this.socket = new WebSocket(config.asr.wsUrl, {
       headers: buildRequestHeaders(this.credentials),
     });
+    const socket = this.socket;
 
-    this.socket.on("open", () => {
-      if (!this.sessionActive) {
+    socket.on("open", () => {
+      if (this.finalEmitted || (!this.sessionActive && !this.stopping)) {
         log("ASR: WS open but session no longer active, closing");
-        this.socket?.close();
+        socket.close();
         return;
       }
       this.ready = true;
       log("ASR: WebSocket connected, sending config + flushing audio");
-      this.socket?.send(buildFullClientRequest(this.seq++));
+      socket.send(buildFullClientRequest(this.seq++));
       this.flushAudio(this.stopping);
 
       if (this.stopping && this.endTimeout) {

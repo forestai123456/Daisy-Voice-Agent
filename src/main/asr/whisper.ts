@@ -6,7 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { log } from "../utils/logger";
 import { VAD } from "../wakeword/monitor";
-import { getWhisperModelPath, getBundledBin } from "../config/env";
+import { getWhisperModelPath, getBundledBin, getWhisperExecutionEnv } from "../config/env";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,7 +26,7 @@ export class WhisperAsrSession extends EventEmitter {
   private processing = false;
   private lastText = "";
 
-  constructor() {
+  constructor(private readonly autoStopOnSilence = true) {
     super();
     this.vad = new VAD();
   }
@@ -80,7 +80,7 @@ export class WhisperAsrSession extends EventEmitter {
       this.totalBytes += buffer.length;
 
       // Stop on silence or max length
-      if (vadEvent.silenceEnd || this.totalBytes >= MAX_AUDIO_BYTES) {
+      if ((this.autoStopOnSilence && vadEvent.silenceEnd) || this.totalBytes >= MAX_AUDIO_BYTES) {
         log("WhisperAsrSession: silence or max length reached, transcribing...");
         this.sessionActive = false;
         this.preRollBuffer = [];
@@ -113,6 +113,7 @@ export class WhisperAsrSession extends EventEmitter {
         "--prompt", "Daisy, 黛西",
         "-sns",
       ], {
+        env: getWhisperExecutionEnv(WHISPER_CLI),
         timeout: 15000,
         maxBuffer: 1024 * 1024,
       });

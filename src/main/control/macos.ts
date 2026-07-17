@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { BrowserWindow } from "electron";
+import ffmpegStaticPath from "ffmpeg-static";
 import { log, logError } from "../utils/logger";
 import { matchApp } from "../command/router";
 import { getBundledBin, config } from "../config/env";
@@ -11,6 +12,20 @@ import { getBundledBin, config } from "../config/env";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
+function getFfmpegPath(): string {
+  if (!ffmpegStaticPath) return "ffmpeg";
+  if (ffmpegStaticPath.includes(".asar")) {
+    const unpacked = ffmpegStaticPath.replace(".asar", ".asar.unpacked");
+    if (fs.existsSync(unpacked)) return unpacked;
+  }
+  return ffmpegStaticPath;
+}
+
+function resolveOutputPath(sourcePath: string, output: string | undefined, defaultName: string): string {
+  if (!output) return path.join(path.dirname(sourcePath), defaultName);
+  const expanded = expandPath(output);
+  return path.isAbsolute(expanded) ? expanded : path.join(path.dirname(sourcePath), expanded);
+}
 
 function expandPath(p: string): string {
   if (p.startsWith("~")) {
@@ -941,15 +956,21 @@ export async function trimVideo(source: string, start: string, end: string, outp
     const src = expandPath(source);
     if (!fs.existsSync(src)) return `找不到源文件「${source}」`;
 
-    const outName = output || `clip_${start.replace(/:/g, "m")}s-${end.replace(/:/g, "m")}s.mp4`;
-    const outPath = path.join(path.dirname(src), outName);
+    const defaultName = `clip_${start.replace(/:/g, "m")}s-${end.replace(/:/g, "m")}s.mp4`;
+    const outPath = resolveOutputPath(src, output, defaultName);
+    const outName = path.basename(outPath);
 
     const dur = toSeconds(end) - toSeconds(start);
     if (dur <= 0) return `截取时间范围无效：${start} 到 ${end}`;
 
-    const cmd = `ffmpeg -y -ss "${start}" -i "${src}" -t ${dur} -c:v libx264 -preset fast -c:a aac -movflags +faststart "${outPath}"`;
-    log(`trimVideo: ${cmd}`);
-    await execAsync(cmd, { timeout: 120000 });
+    const ffmpeg = getFfmpegPath();
+    const args = [
+      "-y", "-ss", start, "-i", src, "-t", String(dur),
+      "-c:v", "libx264", "-preset", "fast", "-c:a", "aac",
+      "-movflags", "+faststart", outPath,
+    ];
+    log(`trimVideo: ${ffmpeg} ${args.join(" ")}`);
+    await execFileAsync(ffmpeg, args, { timeout: 120000 });
     return `已截取视频片段，保存至「${outName}」（${dur} 秒）`;
   } catch (error) {
     return `视频截取失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -961,13 +982,30 @@ export async function convertVideo(source: string, format: string, output?: stri
     const src = expandPath(source);
     if (!fs.existsSync(src)) return `找不到源文件「${source}」`;
 
+    const normalizedFormat = format.trim().replace(/^\./, "").toLowerCase();
     const baseName = path.basename(src, path.extname(src));
-    const outName = output || `${baseName}.${format}`;
-    const outPath = path.join(path.dirname(src), outName);
+    const outPath = resolveOutputPath(src, output, `${baseName}.${normalizedFormat}`);
+    const outName = path.basename(outPath);
+    const ffmpeg = getFfmpegPath();
+    const args = ["-y", "-i", src];
 
-    const cmd = `ffmpeg -y -i "${src}" -c:v libx264 -preset fast -c:a aac -movflags +faststart "${outPath}"`;
-    log(`convertVideo: ${cmd}`);
-    await execAsync(cmd, { timeout: 300000 });
+    if (normalizedFormat === "gif") {
+      args.push("-vf", "fps=12,scale='min(960,iw)':-2:flags=lanczos", "-loop", "0");
+    } else if (["mp3", "m4a", "wav", "flac", "ogg"].includes(normalizedFormat)) {
+      args.push("-vn");
+      if (normalizedFormat === "mp3") args.push("-c:a", "libmp3lame");
+      if (normalizedFormat === "m4a") args.push("-c:a", "aac");
+    } else if (normalizedFormat === "webm") {
+      args.push("-c:v", "libvpx-vp9", "-c:a", "libopus");
+    } else if (normalizedFormat === "avi") {
+      args.push("-c:v", "mpeg4", "-c:a", "libmp3lame");
+    } else {
+      args.push("-c:v", "libx264", "-preset", "fast", "-c:a", "aac", "-movflags", "+faststart");
+    }
+    args.push(outPath);
+
+    log(`convertVideo: ${ffmpeg} ${args.join(" ")}`);
+    await execFileAsync(ffmpeg, args, { timeout: 300000 });
     return `已转换视频格式，保存至「${outName}」`;
   } catch (error) {
     return `视频格式转换失败: ${error instanceof Error ? error.message : String(error)}`;
@@ -1008,19 +1046,6 @@ async function htmlToPdfViaElectron(htmlPath: string, pdfPath: string): Promise<
   }
 }
 
-function getSofficePath(): string | null {
-  const candidates = [
-    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-    "/opt/homebrew/bin/soffice",
-  ];
-  for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) return p;
-    } catch {}
-  }
-  return null;
-}
-
 export async function convertDocument(source: string, target: string): Promise<string> {
   try {
     const src = expandPath(source);
@@ -1030,46 +1055,54 @@ export async function convertDocument(source: string, target: string): Promise<s
     const srcExt = path.extname(src).toLowerCase();
     const dstExt = path.extname(dst).toLowerCase();
 
-    // HTML → PDF: use Electron's built-in Chromium (supports Chinese fonts, no external deps)
-    if ((srcExt === ".html" || srcExt === ".htm") && dstExt === ".pdf") {
-      await htmlToPdfViaElectron(src, dst);
+    const textutilFormats: Record<string, string> = {
+      ".txt": "txt",
+      ".md": "txt",
+      ".rtf": "rtf",
+      ".html": "html",
+      ".htm": "html",
+      ".doc": "doc",
+      ".docx": "docx",
+      ".odt": "odt",
+      ".wordml": "wordml",
+    };
+
+    if (dstExt === ".pdf" && srcExt !== ".pdf") {
+      let htmlPath = src;
+      let temporaryHtml: string | null = null;
+      if (srcExt !== ".html" && srcExt !== ".htm") {
+        temporaryHtml = path.join(os.tmpdir(), `diri-convert-${Date.now()}.html`);
+        await execFileAsync("/usr/bin/textutil", ["-convert", "html", "-output", temporaryHtml, src], { timeout: 60000 });
+        htmlPath = temporaryHtml;
+      }
+      try {
+        await htmlToPdfViaElectron(htmlPath, dst);
+      } finally {
+        if (temporaryHtml) await fs.promises.unlink(temporaryHtml).catch(() => {});
+      }
       return `已转换为 PDF，保存至「${path.basename(dst)}」`;
     }
 
-    if (dstExt === ".pdf" && srcExt !== ".pdf" && srcExt !== ".html" && srcExt !== ".htm") {
-      const soffice = getSofficePath();
-      if (soffice) {
-        const tmpOutDir = path.join(os.tmpdir(), `diri-soffice-${Date.now()}`);
-        fs.mkdirSync(tmpOutDir, { recursive: true });
-        try {
-          const cmd = `"${soffice}" --headless --convert-to pdf --outdir "${tmpOutDir}" "${src}"`;
-          await execAsync(cmd, { timeout: 120000, env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH || ""}` } });
-          const produced = path.join(tmpOutDir, path.basename(src, path.extname(src)) + ".pdf");
-          if (!fs.existsSync(produced)) throw new Error("LibreOffice 未生成 PDF");
-          fs.copyFileSync(produced, dst);
-          return `已转换为 PDF（LibreOffice，保留排版与颜色），保存至「${path.basename(dst)}」`;
-        } finally {
-          fs.rmSync(tmpOutDir, { recursive: true, force: true });
-        }
-      }
-    }
-
-    const pandocBin = getBundledBin("pandoc");
-
     if (srcExt === ".pdf") {
+      if (!textutilFormats[dstExt]) return `暂不支持 PDF 转换为 ${dstExt || "无扩展名格式"}`;
       const tmpTxt = path.join(os.tmpdir(), `diri-convert-${Date.now()}.txt`);
-      await execAsync(`pdftotext "${src}" "${tmpTxt}"`);
-      const pdfEngine = dstExt === ".pdf" ? ` --pdf-engine=${getBundledBin("weasyprint")}` : "";
-      const cmd = `"${pandocBin}"${pdfEngine} "${tmpTxt}" -o "${dst}"`;
-      await execAsync(cmd, { timeout: 60000, env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH || ""}` } });
-      await fs.promises.unlink(tmpTxt).catch(() => {});
-    } else {
-      // Non-PDF input: pandoc handles directly
-      const pdfEngine = dstExt === ".pdf" ? ` --pdf-engine=${getBundledBin("weasyprint")}` : "";
-      const cmd = `"${pandocBin}"${pdfEngine} "${src}" -o "${dst}"`;
-      await execAsync(cmd, { timeout: 60000, env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH || ""}` } });
+      const script = [
+        "import fitz, sys",
+        "doc = fitz.open(sys.argv[1])",
+        "open(sys.argv[2], 'w', encoding='utf-8').write('\\n'.join(page.get_text() for page in doc))",
+      ].join("\n");
+      try {
+        await execFileAsync("python3", ["-c", script, src, tmpTxt], { timeout: 60000 });
+        await execFileAsync("/usr/bin/textutil", ["-convert", textutilFormats[dstExt], "-output", dst, tmpTxt], { timeout: 60000 });
+      } finally {
+        await fs.promises.unlink(tmpTxt).catch(() => {});
+      }
+      return `已转换文档，保存至「${path.basename(dst)}」`;
     }
 
+    const targetFormat = textutilFormats[dstExt];
+    if (!targetFormat) return `暂不支持转换为 ${dstExt || "无扩展名格式"}`;
+    await execFileAsync("/usr/bin/textutil", ["-convert", targetFormat, "-output", dst, src], { timeout: 60000 });
     return `已转换文档，保存至「${path.basename(dst)}」`;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
