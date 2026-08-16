@@ -56,4 +56,5 @@ export const IPC_CHANNELS = {
   UPDATE_DOWNLOAD: "update:download",
   UPDATE_DOWNLOAD_PROGRESS: "update:download-progress",
   UPDATE_INSTALL: "update:install",
+
 } as const;

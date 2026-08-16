@@ -1,20 +1,22 @@
 {
   "name": "Daisy",
-  "version": "1.5.2",
-  "description": "Daisy：macOS AI 语音助手",
+  "version": "1.6.0",
+  "description": "Daisy - AI voice assistant for Windows",
   "author": "Daisy",
   "main": "dist/main/index.js",
   "scripts": {
-    "build": "tsc && npm run copy-renderer && npm run build:settings",
+    "build": "npm run build:native && tsc && npm run copy-renderer && npm run build:settings",
+    "build:native": "node scripts/build-native.cjs",
     "build:watch": "tsc --watch",
     "build:settings": "vite build --config vite.settings.config.ts",
-    "copy-renderer": "rm -rf dist/renderer && cp -R src/renderer dist/renderer",
+    "copy-renderer": "node scripts/copy-renderer.cjs",
     "dev": "npm run build && electron .",
     "start": "electron .",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
-    "dist:mac": "npm run build && electron-builder --mac",
-    "clean": "rm -rf dist releases",
+    "dist:win": "npm run dist:win:x64",
+    "dist:win:x64": "npm run build && electron-builder --win --x64",
+    "dist:win:arm64": "npm run build && electron-builder --win --arm64",
     "postinstall": "patch-package"
   },
   "devDependencies": {
@@ -22,7 +24,6 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
-    "@netlify/functions": "^4.2.5",
     "@vitejs/plugin-react": "^6.0.3",
     "electron": "^42.5.0",
     "electron-builder": "^26.15.3",
@@ -31,20 +32,18 @@
     "vite": "^8.1.0"
   },
   "dependencies": {
-    "@picovoice/porcupine-node": "^4.0.2",
     "@tailwindcss/vite": "^4.3.2",
     "dotenv": "^16.5.0",
     "duck-duck-scrape": "^2.2.7",
     "electron-updater": "^6.8.9",
-    "ffmpeg-static": "^5.3.0",
     "framer-motion": "^12.42.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.42.2",
     "node-edge-tts": "^1.2.10",
+    "node-global-key-listener": "^0.3.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tailwindcss": "^4.3.2",
-    "uiohook-napi": "^1.5.5",
     "ws": "^8.21.0"
   },
   "build": {
@@ -53,45 +52,64 @@
     "directories": {
       "output": "releases"
     },
-    "afterPack": "scripts/adhoc-sign.js",
     "files": [
       "dist/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!.env",
+      "!.env.*",
+      "!**/.env",
+      "!**/.env.*",
+      "!daisy.env",
+      "!daisy.env.*",
+      "!**/daisy.env",
+      "!**/daisy.env.*",
+      "!**/node-global-key-listener/bin/**"
     ],
+    "afterPack": "scripts/after-pack-sign.cjs",
     "asarUnpack": [
       "assets/bin/**",
       "assets/lib/**",
-      "assets/models/**",
-      "node_modules/uiohook-napi/**",
-      "node_modules/ffmpeg-static/**"
+      "assets/models/**"
     ],
-    "dmg": {
-      "contents": [
-        {
-          "x": 140,
-          "y": 200
-        },
-        {
-          "x": 400,
-          "y": 200,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ]
-    },
+    "extraResources": [
+      {
+        "from": "assets/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "assets/icon.icns",
+        "to": "icon.icns"
+      }
+    ],
     "mac": {
       "icon": "assets/icon.icns",
       "category": "public.app-category.utilities",
-      "identity": null,
       "target": [
         {
           "target": "dmg",
-          "arch": [
-            "arm64"
-          ]
+          "arch": ["arm64"]
         }
       ]
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Daisy"
     }
   }
 }

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'">
+  <title>diri-panel</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { 
+      width: 100%; 
+      height: 100%; 
+      background: transparent !important; 
+      overflow: hidden; 
+      user-select: none; 
+      -webkit-user-select: none; 
+      position: relative;
+    }
+
+    /* Theme configuration */
+    :root {
+      --panel-bg: linear-gradient(135deg, rgba(245, 245, 245, 0.96) 0%, rgba(245, 245, 245, 0.88) 40%, rgba(240, 240, 240, 0.75) 70%, rgba(245, 245, 245, 0.95) 100%);
+      --panel-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.95), inset 0 -2px 4px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.05);
+      --panel-border: rgba(255, 255, 255, 0.65);
+      --panel-text: #334155;
+      --panel-shine: rgba(255, 255, 255, 0.4);
+      --drop-fill: url(#bridgeGradLight);
+      --drop-stroke: rgba(255, 255, 255, 0.65);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --panel-bg: linear-gradient(135deg, rgba(30, 41, 59, 0.96) 0%, rgba(15, 23, 42, 0.88) 40%, rgba(10, 15, 30, 0.75) 70%, rgba(15, 23, 42, 0.95) 100%);
+        --panel-shadow: inset 0 2px 4px rgba(255, 255, 255, 0.15), inset 0 -2px 4px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.2);
+        --panel-border: rgba(255, 255, 255, 0.15);
+        --panel-text: #e2e8f0;
+        --panel-shine: rgba(255, 255, 255, 0.15);
+        --drop-fill: url(#bridgeGradDark);
+        --drop-stroke: rgba(255, 255, 255, 0.15);
+      }
+    }
+
+    /* ── 首次滴落水滴动画 ── */
+    @keyframes dropWetFirst {
+      0%   { transform: translate3d(-50%, -45px, 0) scale3d(0.35, 1.4, 1); opacity: 0; animation-timing-function: ease-in; }
+      34%  { transform: translate3d(-50%, 34px, 0)  scale3d(0.35, 1.4, 1); opacity: 1; animation-timing-function: ease-out; }
+      65%  { transform: translate3d(-50%, 36.5px, 0) scale3d(2.0,  0.18, 1); opacity: 1; animation-timing-function: ease-out; }
+      100% { transform: translate3d(-50%, 38px, 0)  scale3d(2.6,  0.01, 1); opacity: 0; }
+    }
+
+    /* ── 周期性小水滴动画 ── */
+    @keyframes dropWetPeriodic {
+      0%   { transform: translate3d(-50%, -44px, 0) scale3d(0.35, 1.4, 1); opacity: 0; animation-timing-function: ease-in; }
+      32%  { transform: translate3d(-50%, 0px, 0)   scale3d(0.35, 1.4, 1); opacity: 1; animation-timing-function: ease-out; }
+      65%  { transform: translate3d(-50%, 2.5px, 0)  scale3d(2.1,  0.12, 1); opacity: 1; animation-timing-function: ease-out; }
+      100% { transform: translate3d(-50%, 4.0px, 0)  scale3d(2.7,  0.01, 1); opacity: 0; }
+    }
+
+    /* ── 首次大水滴 SVG ── */
+    #droppingWet {
+      display: none;
+      position: absolute;
+      left: 50%;
+      width: 100px;
+      height: 55px;
+      top: 88px;
+      transform-origin: bottom center;
+      z-index: 30;
+      pointer-events: none;
+      will-change: transform, opacity;
+      overflow: visible;
+      backface-visibility: hidden;
+      transform: translate3d(0, 0, 0);
+    }
+
+    .dropping-wet-anim {
+      display: block !important;
+      animation: dropWetFirst 0.65s forwards;
+    }
+
+    /* ── 周期性小水滴 SVG ── */
+    #droppingWetPeriodic {
+      display: none;
+      position: absolute;
+      left: 50%;
+      width: 50px;
+      height: 25px;
+      top: 109px;   /* 109 + 25 = 134 = panel top */
+      transform-origin: bottom center;
+      z-index: 30;
+      pointer-events: none;
+      will-change: transform, opacity;
+      overflow: visible;
+      backface-visibility: hidden;
+      transform: translate3d(0, 0, 0);
+    }
+
+    .dropping-wet-periodic-anim {
+      display: block !important;
+      animation: dropWetPeriodic 0.65s forwards;
+    }
+
+    /* ── 液态玻璃面板 ── */
+    .liquid-panel {
+      position: absolute;
+      left: 50%;
+      transform: translate3d(-50%, 8px, 0);
+      top: 134px;
+      z-index: 20;
+      overflow: hidden;
+      border: 1px solid var(--panel-border);
+      border-radius: 9999px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      width: 20px;
+      height: 10px;
+      background: var(--panel-bg);
+      box-shadow: var(--panel-shadow);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      will-change: transform, opacity, width, height;
+      transition: width 0.6s cubic-bezier(0.25, 1, 0.5, 1), 
+                  height 0.6s cubic-bezier(0.25, 1, 0.5, 1), 
+                  opacity 0.4s ease, 
+                  transform 0.4s ease,
+                  border-radius 0.6s ease;
+    }
+
+    .liquid-panel.expanded {
+      opacity: 1;
+      transform: translate3d(-50%, 0, 0);
+      border-radius: 9999px;
+    }
+
+    .liquid-panel.has-expanded {
+      /* 完全展开后禁用 width/height 过渡，避免拖拽缩放时产生延迟 */
+      transition: opacity 0.4s ease, 
+                  transform 0.4s ease,
+                  border-radius 0.6s ease;
+    }
+
+    /* ── 扫光动画 ── */
+    @keyframes shine {
+      0%   { transform: translate3d(-150%, 0, 0) skewX(-12deg); }
+      100% { transform: translate3d(250%, 0, 0)  skewX(-12deg); }
+    }
+
+    .panel-shine {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to right, transparent, var(--panel-shine), transparent);
+      width: 60%;
+      animation: shine 3s linear infinite;
+      pointer-events: none;
+    }
+
+    /* ── 面板内容区 ── */
+    .panel-content-wrapper {
+      opacity: 0;
+      width: 100%;
+      height: 100%;
+      padding: 16px 36px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: opacity 0.25s ease;
+      cursor: text;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    .panel-content-wrapper.visible {
+      opacity: 1;
+    }
+
+    .panel-text-scroll {
+      width: 100%;
+      height: 100%;
+      overflow-y: auto;
+      /* Keep the scroll viewport centered inside the symmetric outer padding. */
+      padding-inline: 2px;
+      text-align: left;
+    }
+
+    /* 隐藏滚动条 */
+    .panel-text-scroll::-webkit-scrollbar { display: none; }
+    .panel-text-scroll {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    .panel-text {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      font-weight: 400;
+      color: var(--panel-text);
+      letter-spacing: 0.03em;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+
+    /* ── 四个隐形缩放触发区 ── */
+    .resize-zone {
+      position: absolute;
+      cursor: se-resize;
+      z-index: 30;
+      select: none;
+      display: none;
+    }
+    /* 触发点1：右下角最边缘对角区域 */
+    #rz1 { bottom: 4px;  right: 8px;  width: 32px; height: 32px; }
+    /* 触发点2：底部中间偏右横向长条 */
+    #rz2 { bottom: 0;    right: 40px; width: 112px; height: 24px; }
+    /* 触发点3：右下侧圆角偏上弧面 */
+    #rz3 { bottom: 24px; right: 4px;  width: 24px;  height: 48px; }
+    /* 触发点4：右侧圆角正中间过渡区 */
+    #rz4 { bottom: 16px; right: 16px; width: 40px;  height: 40px; }
+
+    .liquid-panel.has-expanded .resize-zone {
+      display: block;
+    }
+
+    /* ── 边缘流光 SVG 容器 ── */
+    #borderFlowSvg {
+      position: absolute;
+      left: 50%;
+      transform: translate3d(-50%, 0, 0);
+      top: 134px;
+      z-index: 25;
+      pointer-events: none;
+      overflow: visible;
+      display: none;
+      will-change: transform, opacity;
+    }
+  </style>
+</head>
+<body>
+  <!-- SVG 渐变共享定义 -->
+  <svg id="svgDefs" style="position:absolute;width:0;height:0;overflow:hidden;">
+    <defs>
+      <linearGradient id="bridgeGradLight" x1="50" y1="0" x2="50" y2="55" gradientUnits="userSpaceOnUse">
+        <stop offset="0%"   stop-color="rgba(245, 245, 245, 0.98)" />
+        <stop offset="70%"  stop-color="rgba(240, 240, 240, 0.92)" />
+        <stop offset="100%" stop-color="rgba(245, 245, 245, 0.96)" />
+      </linearGradient>
+      <linearGradient id="bridgeGradDark" x1="50" y1="0" x2="50" y2="55" gradientUnits="userSpaceOnUse">
+        <stop offset="0%"   stop-color="rgba(30, 41, 59, 0.98)" />
+        <stop offset="70%"  stop-color="rgba(15, 23, 42, 0.92)" />
+        <stop offset="100%" stop-color="rgba(15, 23, 42, 0.96)" />
+      </linearGradient>
+      <filter id="glowFilter" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="3.5" result="blur" />
+        <feMerge>
+          <feMergeNode in="blur" />
+          <feMergeNode in="SourceGraphic" />
+        </feMerge>
+      </filter>
+      <filter id="glowFilterWide" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="8" result="blur" />
+        <feMerge>
+          <feMergeNode in="blur" />
+        </feMerge>
+      </filter>
+    </defs>
+  </svg>
+
+  <!-- 首次大水滴 -->
+  <svg
+    id="droppingWet"
+    viewBox="0 0 100 55"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <path
+      d="M 50 4 C 50 4, 34 22, 34 36 C 34 44, 41 50, 50 50 C 59 50, 66 44, 66 36 C 66 22, 50 4, 50 4 Z"
+      fill="var(--drop-fill)"
+      stroke="var(--drop-stroke)"
+      stroke-width="1.2"
+    />
+  </svg>
+
+  <!-- 周期性小水滴 -->
+  <svg
+    id="droppingWetPeriodic"
+    viewBox="0 0 100 50"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <path
+      d="M 50 4 C 50 4, 34 22, 34 36 C 34 44, 41 50, 50 50 C 59 50, 66 44, 66 36 C 66 22, 50 4, 50 4 Z"
+      fill="var(--drop-fill)"
+      stroke="var(--drop-stroke)"
+      stroke-width="1.2"
+    />
+  </svg>
+
+  <!-- 液态玻璃展示面板 -->
+  <div id="liquidPanel" class="liquid-panel">
+    <div class="panel-shine"></div>
+    <div class="panel-content-wrapper" id="panelContent">
+      <div class="panel-text-scroll">
+        <div id="panelText" class="panel-text"></div>
+      </div>
+    </div>
+    <!-- 四个隐形缩放触发区 -->
+    <div id="rz1" class="resize-zone" title="按住左键拖动，自由调节面板大小"></div>
+    <div id="rz2" class="resize-zone" title="按住左键拖动，自由调节面板大小"></div>
+    <div id="rz3" class="resize-zone" title="按住左键拖动，自由调节面板大小"></div>
+    <div id="rz4" class="resize-zone" title="按住左键拖动，自由调节面板大小"></div>
+  </div>
+
+  <!-- 边缘流光 SVG（置于面板外，获得完整的无裁剪发光阴影效果） -->
+  <svg id="borderFlowSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+
+  <script src="panel.js"></script>
+</body>
+</html>

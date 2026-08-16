@@ -4,16 +4,19 @@ import { log, logError } from "../utils/logger";
 
 let settingsWindow: BrowserWindow | null = null;
 
-export function createSettingsWindow(): BrowserWindow {
+export function createSettingsWindow(show = true): BrowserWindow {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
-    if (settingsWindow.isMinimized()) {
-      settingsWindow.restore();
+    if (show) {
+      if (settingsWindow.isMinimized()) {
+        settingsWindow.restore();
+      }
+      settingsWindow.show();
+      settingsWindow.focus();
     }
-    settingsWindow.show();
-    settingsWindow.focus();
     return settingsWindow;
   }
 
+  const isMac = process.platform === "darwin";
   settingsWindow = new BrowserWindow({
     width: 900,
     height: 721,
@@ -23,8 +26,12 @@ export function createSettingsWindow(): BrowserWindow {
     title: "Daisy 设置",
     resizable: true,
     backgroundColor: "#eef2fa",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 18, y: 18 },
+    // hiddenInset + trafficLightPosition are macOS-only. On Windows, fall back
+    // to the default title bar (frame: true) so the user gets standard min/max/close
+    // controls and a draggable caption.
+    ...(isMac ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 18, y: 18 } } : {}),
+    autoHideMenuBar: !isMac,
+    show,
     webPreferences: {
       preload: path.join(__dirname, "../../preload/index.js"),
       contextIsolation: true,

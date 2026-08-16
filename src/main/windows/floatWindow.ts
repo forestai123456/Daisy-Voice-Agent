@@ -2,27 +2,57 @@ import path from "node:path";
 import { BrowserWindow, screen } from "electron";
 import { IPC_CHANNELS } from "../ipc/channels";
 import { log } from "../utils/logger";
-
-const ORB_SIZE = 92;
+import {
+  configureMacOSOverlay,
+  raiseMacOSOverlay,
+  setMacOSOverlayVisible,
+} from "./macosOverlay";
+import {
+  calculateFloatWindowBounds,
+  FLOAT_ORB_SIZE,
+} from "./floatPosition";
 
 let floatWindow: BrowserWindow | null = null;
 
 let hideTimeout: NodeJS.Timeout | null = null;
+
+/**
+ * Fullscreen macOS apps live in their own Space. Re-assert the overlay
+ * collection behaviour whenever it is shown; only setting it at creation can
+ * leave a transparent, non-focusable window behind the active fullscreen app.
+ */
+function prepareFloatOverlayForFullScreen(): void {
+  if (!floatWindow || floatWindow.isDestroyed()) return;
+
+  if (process.platform === "darwin") {
+    floatWindow.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true,
+      // The native window was created while Daisy was an accessory app. Keep
+      // that process type while it joins the active fullscreen Space.
+      skipTransformProcessType: true,
+    });
+  }
+  // One level above the screen-saver layer is Electron's documented maximum
+  // recommended overlay level on macOS. It keeps the orb above fullscreen
+  // app content without turning it into a focus-stealing normal window.
+  floatWindow.setAlwaysOnTop(true, "screen-saver", 1);
+  configureMacOSOverlay(floatWindow);
+}
 
 export function createFloatWindow(): BrowserWindow {
   if (floatWindow && !floatWindow.isDestroyed()) {
     return floatWindow;
   }
 
-  const { x: screenX, y: screenY, width: screenWidth } = screen.getPrimaryDisplay().bounds;
-  const x = screenX + Math.round((screenWidth - ORB_SIZE) / 2);
-  const y = screenY - 20;
+  const initialBounds = calculateFloatWindowBounds(
+    screen.getPrimaryDisplay().bounds,
+  );
 
   floatWindow = new BrowserWindow({
-    width: ORB_SIZE,
-    height: ORB_SIZE,
-    x,
-    y,
+    width: FLOAT_ORB_SIZE,
+    height: FLOAT_ORB_SIZE,
+    x: initialBounds.x,
+    y: initialBounds.y,
     frame: false,
     transparent: true,
     backgroundColor: "#00000000",
@@ -45,9 +75,13 @@ export function createFloatWindow(): BrowserWindow {
   // Do not use Electron's system-wide content protection here. It also hides
   // the orb from third-party screen recorders such as Screen Studio. Daisy's
   // own full-screen capture path hides the orb only for that single frame.
-  floatWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  floatWindow.setAlwaysOnTop(true, "screen-saver");
+  floatWindow.setAlwaysOnTop(true, "screen-saver", 1);
+  configureMacOSOverlay(floatWindow);
   floatWindow.setIgnoreMouseEvents(true);
+
+  if (process.platform === "win32") {
+    floatWindow.setContentProtection(true);
+  }
 
   floatWindow.webContents.on("render-process-gone", (_event, details) => {
     console.error("Float window render process gone:", details);
@@ -77,17 +111,26 @@ export function showFloatWindow(): void {
     hideTimeout = null;
   }
 
-  // 1. Show the window immediately to eliminate visual delay!
-  floatWindow.showInactive();
+  // 1. Restore the overlay above the active fullscreen Space before showing.
+  setMacOSOverlayVisible("float", true);
+  prepareFloatOverlayForFullScreen();
 
-  // 2. Reposition it only if display boundary changed, to avoid blocking display server queries
+  // 2. Show the window immediately to eliminate visual delay!
+  floatWindow.showInactive();
+  raiseMacOSOverlay(floatWindow);
+  floatWindow.moveTop();
+
+  // 3. Reposition it only if display boundary changed, to avoid blocking display server queries
   try {
-    const { x: screenX, y: screenY, width: screenWidth } = screen.getPrimaryDisplay().bounds;
-    const x = screenX + Math.round((screenWidth - ORB_SIZE) / 2);
-    const y = screenY - 20;
+    const targetBounds = calculateFloatWindowBounds(
+      screen.getPrimaryDisplay().bounds,
+    );
     const currentPos = floatWindow.getPosition();
-    if (currentPos[0] !== x || currentPos[1] !== y) {
-      floatWindow.setPosition(x, y);
+    if (
+      currentPos[0] !== targetBounds.x ||
+      currentPos[1] !== targetBounds.y
+    ) {
+      floatWindow.setPosition(targetBounds.x, targetBounds.y);
     }
   } catch (err) {
     console.error("Error setting float window position:", err);
@@ -109,6 +152,7 @@ export function hideFloatWindow(): void {
     hideTimeout = null;
     if (floatWindow && !floatWindow.isDestroyed()) {
       floatWindow.hide();
+      setMacOSOverlayVisible("float", false);
       log("Float window hidden");
     }
   }, 300);

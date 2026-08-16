@@ -54,7 +54,9 @@ export class EdgeTTSPlayer extends EventEmitter {
       while (retries > 0) {
         try {
           const tts = new EdgeTTS({ voice: config.tts.voice, rate: config.tts.rate });
+          log(`[TTS_PERF] TTS Request Start (speak) for text: "${text.slice(0, 30)}..."`);
           await tts.ttsPromise(text, filePath);
+          log(`[TTS_PERF] TTS Response & File Saved (speak): ${filePath}`);
           lastError = null;
           break;
         } catch (error) {
@@ -100,7 +102,9 @@ export class EdgeTTSPlayer extends EventEmitter {
       while (retries > 0) {
         try {
           const tts = new EdgeTTS({ voice: config.tts.voice, rate: config.tts.rate });
+          log(`[TTS_PERF] TTS Request Start (synthesize) for text: "${text.slice(0, 30)}..."`);
           await tts.ttsPromise(text, filePath);
+          log(`[TTS_PERF] TTS Response & File Saved (synthesize): ${filePath}`);
           lastError = null;
           break;
         } catch (error) {

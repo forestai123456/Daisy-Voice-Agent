@@ -13,14 +13,14 @@ export interface DiriAPI {
   quitApp: () => void;
 
   // Audio window -> main
-  sendAudioData: (base64: string) => void;
-  sendAudioError: (message: string) => void;
+  sendAudioData: (base64: string, generation?: number) => void;
+  sendAudioError: (message: string, generation?: number) => void;
   sendRendererError: (message: string) => void;
   sendRendererLog: (message: string) => void;
   sendTtsPlayEnded: () => void;
   muteCurrentTts: () => void;
-  sendAudioReady: () => void;
-  sendAudioStopped: () => void;
+  sendAudioReady: (generation?: number) => void;
+  sendAudioStopped: (generation?: number) => void;
 
   // Whisper model management
   getWhisperStatus: (modelName?: string) => Promise<{ cliInstalled: boolean; modelExists: boolean; modelPath: string; modelName: string }>;
@@ -28,7 +28,7 @@ export interface DiriAPI {
   onWhisperDownloadProgress: (callback: (progress: { percent: number; status: string }) => void) => () => void;
 
   // Shortcut capture
-  captureShortcut: () => void;
+  captureShortcut: (mode: "single" | "combo") => void;
   cancelShortcutCapture: () => void;
   onShortcutCaptured: (callback: (payload: { keyName: string; cancelled?: boolean }) => void) => () => void;
 
@@ -71,10 +71,9 @@ export interface DiriAPI {
   onStartRecording: (callback: () => void) => () => void;
   onStopRecording: (callback: () => void) => () => void;
   onWakeWordEnabled: (callback: (enabled: boolean) => void) => () => void;
-  // Float window interaction plumbing. These are UI transport helpers only;
-  // they do not enable any paid-only feature.
-  onSetDocked: (callback: (docked: boolean) => void) => () => void;
   setIgnoreMouse: (ignore: boolean) => void;
+  resizeFloatWindow: (width: number, height: number) => void;
+  lockPanelOpen: () => void;
 }
 
 function createListener<T>(channel: string) {
@@ -97,20 +96,20 @@ const api: DiriAPI = {
   updateConfig: (cfg: Record<string, string>) => ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CONFIG, cfg),
   quitApp: () => ipcRenderer.send(IPC_CHANNELS.QUIT_APP),
 
-  sendAudioData: (base64: string) => ipcRenderer.send(IPC_CHANNELS.AUDIO_DATA, base64),
-  sendAudioError: (message: string) => ipcRenderer.send(IPC_CHANNELS.AUDIO_ERROR, message),
+  sendAudioData: (base64: string, generation = 0) => ipcRenderer.send(IPC_CHANNELS.AUDIO_DATA, base64, generation),
+  sendAudioError: (message: string, generation = 0) => ipcRenderer.send(IPC_CHANNELS.AUDIO_ERROR, message, generation),
   sendRendererError: (message: string) => ipcRenderer.send(IPC_CHANNELS.RENDERER_ERROR, message),
   sendRendererLog: (message: string) => ipcRenderer.send(IPC_CHANNELS.RENDERER_LOG, message),
   sendTtsPlayEnded: () => ipcRenderer.send(IPC_CHANNELS.TTS_PLAY_ENDED),
   muteCurrentTts: () => ipcRenderer.send(IPC_CHANNELS.TTS_MUTE_CURRENT),
-  sendAudioReady: () => ipcRenderer.send("audio:ready"),
-  sendAudioStopped: () => ipcRenderer.send("audio:stopped"),
+  sendAudioReady: (generation = 0) => ipcRenderer.send("audio:ready", generation),
+  sendAudioStopped: (generation = 0) => ipcRenderer.send("audio:stopped", generation),
 
   getWhisperStatus: (modelName?: string) => ipcRenderer.invoke(IPC_CHANNELS.WHISPER_STATUS, modelName),
   downloadWhisperModel: (modelName: string) => ipcRenderer.send(IPC_CHANNELS.WHISPER_DOWNLOAD, modelName),
   onWhisperDownloadProgress: createListener<{ percent: number; status: string }>(IPC_CHANNELS.WHISPER_DOWNLOAD_PROGRESS),
 
-  captureShortcut: () => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE),
+  captureShortcut: (mode: "single" | "combo") => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE, mode),
   cancelShortcutCapture: () => ipcRenderer.send(IPC_CHANNELS.SHORTCUT_CAPTURE_CANCEL),
   onShortcutCaptured: createListener<{ keyName: string; cancelled?: boolean }>(IPC_CHANNELS.SHORTCUT_CAPTURED),
 
@@ -141,8 +140,9 @@ const api: DiriAPI = {
   onStartRecording: createListener(IPC_CHANNELS.START_RECORDING),
   onStopRecording: createListener(IPC_CHANNELS.STOP_RECORDING),
   onWakeWordEnabled: createListener<boolean>(IPC_CHANNELS.AUDIO_WAKE_WORD_ENABLED),
-  onSetDocked: createListener<boolean>("set-docked"),
   setIgnoreMouse: (ignore: boolean) => ipcRenderer.send("window:set-ignore-mouse", ignore),
+  resizeFloatWindow: (width: number, height: number) => ipcRenderer.send("window:resize-float", width, height),
+  lockPanelOpen: () => ipcRenderer.send("window:lock-panel-open"),
 };
 
 contextBridge.exposeInMainWorld("diriAPI", api);

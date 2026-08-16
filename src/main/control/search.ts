@@ -8,6 +8,7 @@ interface FirecrawlSearchResult {
   title?: string;
   description?: string;
 }
+
 function simplifyQueryForFirecrawl(query: string): string {
   return query
     .replace(/site:\S+/gi, "")
@@ -217,3 +218,4 @@ export async function scrapeUrl(url: string): Promise<string> {
     return `网页抓取失败: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
+

@@ -1,65 +1,97 @@
-import { UiohookKey, uIOhook, type UiohookKeyboardEvent, type UiohookMouseEvent } from "uiohook-napi";
+import { GlobalKeyboardListener } from "node-global-key-listener";
 import { EventEmitter } from "node:events";
 import { config } from "../config/env";
-import { log, logError } from "../utils/logger";
+import { WinKeyStatePoller } from "./winKeyStatePoller";
 
 export class GlobalShortcut extends EventEmitter {
+  private listener: GlobalKeyboardListener | null = null;
   private targetKeys: string[];
   private pressedKeys = new Set<string>();
   private isRecording = false;
   private releaseDebounceTimer: NodeJS.Timeout | null = null;
   private readonly RELEASE_DEBOUNCE_MS = 50;
-  private captureMode = false;
+  private captureMode: "single" | "combo" | null = null;
   private capturePressedKeys = new Set<string>();
   private captureKeysInOrder: string[] = [];
   private pressedTimer: NodeJS.Timeout | null = null;
-  private listenerStarted = false;
+  private windowsPoller: WinKeyStatePoller | null = null;
 
-  private readonly handleKeyDown = (event: UiohookKeyboardEvent): void => {
-    const key = this.keyCodeToName(event.keycode);
-    if (key) this.handleInput(key, "DOWN");
-  };
-
-  private readonly handleKeyUp = (event: UiohookKeyboardEvent): void => {
-    const key = this.keyCodeToName(event.keycode);
-    if (key) this.handleInput(key, "UP");
-  };
-
-  private readonly handleMouseDown = (event: UiohookMouseEvent): void => {
-    const key = this.mouseButtonToName(event.button);
-    if (key) this.handleInput(key, "DOWN");
-  };
-
-  private readonly handleMouseUp = (event: UiohookMouseEvent): void => {
-    const key = this.mouseButtonToName(event.button);
-    if (key) this.handleInput(key, "UP");
-  };
-
-  constructor() {
+  constructor(listenerForTest?: GlobalKeyboardListener) {
     super();
     this.targetKeys = this.parseShortcut(config.shortcut.globalShortcut);
-    this.setup();
+
+    // Deterministic unit tests inject a listener so they can exercise the
+    // press/release state machine without registering a real OS shortcut.
+    if (listenerForTest) {
+      this.listener = listenerForTest;
+      this.setupNativeListener();
+      return;
+    }
+
+    // Electron's globalShortcut exposes key-down only. It cannot implement
+    // push-to-talk because Windows key auto-repeat looks like a second press.
+    // Poll physical state so DOWN starts recording and UP sends it.
+    if (process.platform === "win32") {
+      const poller = new WinKeyStatePoller();
+      this.windowsPoller = poller;
+      poller.on("pressed", () => {
+        if (this.isRecording) return;
+        this.isRecording = true;
+        this.emit("pressed");
+      });
+      poller.on("released", () => {
+        if (!this.isRecording) return;
+        this.isRecording = false;
+        this.emit("released");
+      });
+      poller.on("listener-info", (message: string) => this.emit("listener-info", message));
+      poller.on("listener-error", (message: string) => this.emit("listener-error", message));
+      poller.start(config.shortcut.globalShortcut);
+      return;
+    }
+
+    const keyServerName = "MacKeyServer";
+    this.listener = new GlobalKeyboardListener({
+      mac: {
+        onInfo: (message) => this.emit("listener-info", message.trim()),
+        onError: (exitCode) => this.emit(
+          "listener-error",
+          `${keyServerName} exited${exitCode === null ? "" : ` (code ${exitCode})`}`,
+        ),
+      },
+      windows: {
+        onInfo: (message) => this.emit("listener-info", message.trim()),
+        onError: (exitCode) => this.emit(
+          "listener-error",
+          `${keyServerName} exited${exitCode === null ? "" : ` (code ${exitCode})`}`,
+        ),
+      },
+    });
+    this.setupNativeListener();
   }
 
-  startCapture(): void {
-    this.captureMode = true;
+  startCapture(mode: "single" | "combo" = "combo"): void {
+    this.captureMode = mode;
     this.pressedKeys.clear();
     this.capturePressedKeys.clear();
     this.captureKeysInOrder = [];
+    this.windowsPoller?.setPaused(true);
   }
 
   stopCapture(): void {
-    this.captureMode = false;
+    this.captureMode = null;
     this.capturePressedKeys.clear();
     this.captureKeysInOrder = [];
+    this.windowsPoller?.setPaused(false);
   }
 
   private keyNameToDisplayName(key: string): string {
+    const isMac = process.platform === "darwin";
     const displayNames: Record<string, string> = {
-      leftalt: "LeftOption",
-      rightalt: "RightOption",
-      leftmeta: "LeftCommand",
-      rightmeta: "RightCommand",
+      leftalt: isMac ? "LeftOption" : "LeftAlt",
+      rightalt: isMac ? "RightOption" : "RightAlt",
+      leftmeta: isMac ? "LeftCommand" : "LeftWin",
+      rightmeta: isMac ? "RightCommand" : "RightWin",
       leftcontrol: "LeftControl",
       rightcontrol: "RightControl",
       leftshift: "LeftShift",
@@ -119,38 +151,27 @@ export class GlobalShortcut extends EventEmitter {
     return aliases[lower] || lower;
   }
 
-  private keyCodeToName(keyCode: number): string | null {
-    const modifierNames = new Map<number, string>([
-      [UiohookKey.Alt, "leftalt"],
-      [UiohookKey.AltRight, "rightalt"],
-      [UiohookKey.Meta, "leftmeta"],
-      [UiohookKey.MetaRight, "rightmeta"],
-      [UiohookKey.Ctrl, "leftcontrol"],
-      [UiohookKey.CtrlRight, "rightcontrol"],
-      [UiohookKey.Shift, "leftshift"],
-      [UiohookKey.ShiftRight, "rightshift"],
-      [UiohookKey.Space, "space"],
-      [UiohookKey.Enter, "return"],
-      [UiohookKey.Escape, "escape"],
-      [UiohookKey.Tab, "tab"],
-      [UiohookKey.Backspace, "backspace"],
-      [UiohookKey.Delete, "delete"],
-    ]);
-    const modifierName = modifierNames.get(keyCode);
-    if (modifierName) return modifierName;
-
-    for (const [name, code] of Object.entries(UiohookKey)) {
-      if (code === keyCode) return name.toLowerCase();
-    }
-    return null;
+  private normalizeEmittedKey(name: string): string {
+    const standard = (name || "").toLowerCase().replace(/\s+/g, "");
+    // node-global-key-listener emits standard names like "LEFT ALT", "RIGHT ALT"
+    if (standard === "leftalt") return "leftalt";
+    if (standard === "rightalt") return "rightalt";
+    if (standard === "leftcommand" || standard === "leftmeta") return "leftmeta";
+    if (standard === "rightcommand" || standard === "rightmeta") return "rightmeta";
+    if (standard === "leftcontrol") return "leftcontrol";
+    if (standard === "rightcontrol") return "rightcontrol";
+    if (standard === "leftshift") return "leftshift";
+    if (standard === "rightshift") return "rightshift";
+    return standard;
   }
 
-  private mouseButtonToName(button: unknown): string | null {
-    const buttonNumber = Number(button);
-    if (buttonNumber === 1) return "mouseleft";
-    if (buttonNumber === 2) return "mouseright";
-    if (buttonNumber === 3) return "mousemiddle";
-    return null;
+  /**
+   * Shortcut settings are deliberately keyboard-only. Without this guard, the
+   * mouse-up event generated by clicking 鈥滆缃揩鎹烽敭鈥?can be captured as
+   * "Mouse Left" before the user has a chance to press a key.
+   */
+  private isMouseButton(key: string): boolean {
+    return key.startsWith("mouse");
   }
 
   private matchesShortcut(targetKeys: string[]): boolean {
@@ -187,90 +208,96 @@ export class GlobalShortcut extends EventEmitter {
     });
   }
 
-  private setup(): void {
-    uIOhook.on("keydown", this.handleKeyDown);
-    uIOhook.on("keyup", this.handleKeyUp);
-    uIOhook.on("mousedown", this.handleMouseDown);
-    uIOhook.on("mouseup", this.handleMouseUp);
+  private setupNativeListener(): void {
+    if (!this.listener) return;
+    void this.listener.addListener((event) => {
+      const key = this.normalizeEmittedKey(event.name || "");
+      if (!key) return;
 
-    try {
-      uIOhook.start();
-      this.listenerStarted = true;
-      log("GlobalShortcut: native Apple Silicon listener started");
-    } catch (error) {
-      logError("GlobalShortcut: failed to start native listener", error);
-    }
-  }
+      if (this.captureMode) {
+        // Ignore the click that opened the shortcut-capture UI, and do not
+        // allow mouse buttons to become a voice-wake shortcut.
+        if (this.isMouseButton(key)) return;
 
-  private handleInput(key: string, state: "DOWN" | "UP"): void {
-    if (this.captureMode) {
-      if (state === "DOWN") {
-        if (!this.capturePressedKeys.has(key)) {
-          this.capturePressedKeys.add(key);
-          this.captureKeysInOrder.push(key);
+        const captureMode = this.captureMode;
+        if (event.state === "DOWN") {
+          if (captureMode === "single") {
+            this.stopCapture();
+            this.emit("captured", this.keyNameToDisplayName(key));
+            return;
+          }
+          if (!this.capturePressedKeys.has(key)) {
+            this.capturePressedKeys.add(key);
+            this.captureKeysInOrder.push(key);
+          }
+        } else if (event.state === "UP") {
+          this.capturePressedKeys.delete(key);
+          if (this.capturePressedKeys.size === 0 && this.captureKeysInOrder.length > 0) {
+            const displayName = this.captureKeysInOrder
+              .map((capturedKey) => this.keyNameToDisplayName(capturedKey))
+              .join("+");
+            this.captureMode = null;
+            this.captureKeysInOrder = [];
+            this.emit("captured", displayName);
+          }
         }
-      } else {
-        this.capturePressedKeys.delete(key);
-        if (this.capturePressedKeys.size === 0 && this.captureKeysInOrder.length > 0) {
-          const displayName = this.captureKeysInOrder
-            .map((capturedKey) => this.keyNameToDisplayName(capturedKey))
-            .join("+");
-          this.captureMode = false;
-          this.captureKeysInOrder = [];
-          this.emit("captured", displayName);
+        return;
+      }
+
+      if (event.state === "DOWN") {
+        // Cancel any pending release (key bounce: user held key, phantom UP, then real DOWN)
+        if (this.releaseDebounceTimer) {
+          clearTimeout(this.releaseDebounceTimer);
+          this.releaseDebounceTimer = null;
         }
-      }
-      return;
-    }
-
-    if (state === "DOWN") {
-      if (this.releaseDebounceTimer) {
-        clearTimeout(this.releaseDebounceTimer);
-        this.releaseDebounceTimer = null;
-      }
-      this.pressedKeys.add(key);
-
-      if (key !== "rightalt" && this.pressedTimer) {
-        clearTimeout(this.pressedTimer);
-        this.pressedTimer = null;
-      }
-
-      if (this.matchesTargetShortcut() && !this.isRecording) {
-        if (this.pressedTimer) clearTimeout(this.pressedTimer);
-        this.pressedTimer = setTimeout(() => {
+        this.pressedKeys.add(key);
+        
+        // If any key other than rightalt is pressed, clear the pressedTimer
+        if (key !== "rightalt" && this.pressedTimer) {
+          clearTimeout(this.pressedTimer);
           this.pressedTimer = null;
-          this.isRecording = true;
-          this.emit("pressed");
-        }, 20);
-      }
-      return;
-    }
+        }
 
-    if (this.shortcutContainsKey(this.targetKeys, key) && this.pressedTimer) {
-      clearTimeout(this.pressedTimer);
-      this.pressedTimer = null;
-    }
-    if (this.shortcutContainsKey(this.targetKeys, key) && this.isRecording) {
-      this.releaseDebounceTimer = setTimeout(() => {
-        this.isRecording = false;
-        this.pressedKeys.clear();
-        this.releaseDebounceTimer = null;
-        this.emit("released");
-      }, this.RELEASE_DEBOUNCE_MS);
-    } else {
-      this.pressedKeys.delete(key);
-    }
+        if (this.matchesTargetShortcut() && !this.isRecording) {
+          if (this.pressedTimer) clearTimeout(this.pressedTimer);
+          this.pressedTimer = setTimeout(() => {
+            this.pressedTimer = null;
+            this.isRecording = true;
+            this.emit("pressed");
+          }, 20);
+        }
+      } else if (event.state === "UP") {
+        if (this.shortcutContainsKey(this.targetKeys, key) && this.pressedTimer) {
+          clearTimeout(this.pressedTimer);
+          this.pressedTimer = null;
+        }
+        if (this.shortcutContainsKey(this.targetKeys, key) && this.isRecording) {
+          // Debounce the release to filter out key bounce.
+          // If the key comes back down within RELEASE_DEBOUNCE_MS, cancel the release.
+          this.releaseDebounceTimer = setTimeout(() => {
+            this.isRecording = false;
+            this.pressedKeys.clear();
+            this.releaseDebounceTimer = null;
+            this.emit("released");
+          }, this.RELEASE_DEBOUNCE_MS);
+        } else {
+          this.pressedKeys.delete(key);
+        }
+      }
+    }).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      const keyServerName = process.platform === "win32" ? "WinKeyServer" : "MacKeyServer";
+      this.emit("listener-error", `Unable to start ${keyServerName}: ${detail}`);
+    });
   }
 
   destroy(): void {
-    uIOhook.off("keydown", this.handleKeyDown);
-    uIOhook.off("keyup", this.handleKeyUp);
-    uIOhook.off("mousedown", this.handleMouseDown);
-    uIOhook.off("mouseup", this.handleMouseUp);
-    if (this.listenerStarted) {
-      uIOhook.stop();
-      this.listenerStarted = false;
+    if (process.platform === "win32") {
+      this.windowsPoller?.kill();
+      this.windowsPoller = null;
+      return;
     }
+    this.listener?.kill();
   }
 
   updateShortcut(shortcut: string): void {
@@ -285,5 +312,8 @@ export class GlobalShortcut extends EventEmitter {
     this.targetKeys = this.parseShortcut(shortcut);
     this.pressedKeys.clear();
     this.isRecording = false;
+    if (process.platform === "win32") {
+      this.windowsPoller?.configure(shortcut);
+    }
   }
 }

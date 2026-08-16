@@ -37,7 +37,10 @@ function findEnvFile(): string | null {
 function loadEnv(): void {
   const envPath = findEnvFile();
   if (envPath) {
-    dotenv.config({ path: envPath });
+    // The user's persisted Daisy settings must win over inherited process
+    // variables. Without override, a stale GLOBAL_SHORTCUT supplied by a
+    // parent process can silently replace the value the user just saved.
+    dotenv.config({ path: envPath, override: true });
   }
 }
 
@@ -81,7 +84,10 @@ export const config = {
     shortcutUseWhisper: process.env.SHORTCUT_USE_WHISPER === "true",
   },
   shortcut: {
-    globalShortcut: process.env.GLOBAL_SHORTCUT || "RightOption",
+    // Windows uses the 3.0-style physical key poller so the wake shortcut has
+    // real DOWN/UP edges: hold to talk and release to send. Default: F8.
+    // macOS keeps RightOption hold-to-talk via the native key listener.
+    globalShortcut: process.env.GLOBAL_SHORTCUT || (process.platform === "win32" ? "F8" : "RightOption"),
   },
   wakeWord: {
     enabled: process.env.WAKE_WORD_ENABLED !== "false",
@@ -91,6 +97,7 @@ export const config = {
     apiKey: process.env.FIRECRAWL_API_KEY || "",
   },
   autoLaunch: process.env.AUTO_LAUNCH === "true",
+  showDockIcon: process.env.SHOW_DOCK_ICON !== "false",
 };
 
 export const WHISPER_MODELS: Record<string, { label: string; size: string; url: string }> = {
@@ -128,36 +135,57 @@ export function getWhisperModelPath(modelName?: string): string {
 
 export function getBundledBin(name: string): string {
   const appPath = app?.getAppPath?.() || "";
+  const isWin = process.platform === "win32";
   const bundled = path.join(appPath, "assets", "bin", name);
-  const candidates = [
-    ...(appPath.includes(".asar") ? [bundled.replace(".asar", ".asar.unpacked")] : []),
-    bundled,
-    "/opt/homebrew/bin/" + name,
-  ];
+  const candidates: string[] = [];
+  if (appPath.includes(".asar")) candidates.push(bundled.replace(".asar", ".asar.unpacked"));
+  candidates.push(bundled);
+  // On Windows, the bare name (e.g. "whisper-cli") won't match the .exe file.
+  // Add an explicit <name>.exe candidate so callers can keep passing "whisper-cli".
+  if (isWin && !name.toLowerCase().endsWith(".exe")) {
+    const withExe = path.join(appPath, "assets", "bin", name + ".exe");
+    if (appPath.includes(".asar")) candidates.push(withExe.replace(".asar", ".asar.unpacked"));
+    candidates.push(withExe);
+  }
+  if (!isWin) {
+    candidates.push("/opt/homebrew/bin/" + name);
+  }
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
   }
   return name; // fallback to PATH
 }
 
-export function getWhisperBackendName(cpuModel = os.cpus()[0]?.model || ""): string | null {
-  if (/Apple M1\b/i.test(cpuModel)) return "libggml-cpu-apple_m1.so";
-  if (/Apple M[23]\b/i.test(cpuModel)) return "libggml-cpu-apple_m2_m3.so";
-  if (/Apple M\d+\b/i.test(cpuModel)) return "libggml-cpu-apple_m4.so";
-  return null;
-}
-
-export function getWhisperExecutionEnv(cliPath = getBundledBin("whisper-cli")): NodeJS.ProcessEnv {
-  const backendName = getWhisperBackendName();
-  if (!backendName || !path.isAbsolute(cliPath)) return process.env;
-
-  const backendPath = path.resolve(path.dirname(cliPath), "..", "lib", backendName);
-  if (!fs.existsSync(backendPath)) return process.env;
-
-  return {
-    ...process.env,
-    GGML_BACKEND_PATH: backendPath,
-  };
+/**
+ * Build the child-process env for spawning the bundled whisper-cli on Windows.
+ * whisper-cli.exe lives in assets/bin but its ggml DLLs live in assets/lib,
+ * which Windows does not search by default (DLL search order: exe dir, system,
+ * cwd, PATH -- never a sibling `lib`). Prepend assets/lib to Path so the DLLs
+ * resolve without hiding the orb, copying files, or touching PATH globally.
+ * No-op on non-win32. Pass the resolved exe path to avoid recomputing it.
+ */
+export function getWhisperExecEnv(exePath?: string): NodeJS.ProcessEnv {
+  if (process.platform !== "win32") return process.env;
+  try {
+    const exe = exePath || getBundledBin("whisper-cli");
+    const libDir = path.join(path.dirname(exe), "..", "lib");
+    if (libDir && fs.existsSync(libDir)) {
+      // Node can expose both Path and PATH on Windows.  Environment variable
+      // names are case-insensitive to Windows, but child_process chooses one
+      // of the duplicate keys when it starts a program.  Keeping both meant
+      // whisper-cli could receive the original PATH and fail to load its ggml
+      // DLLs from assets/lib (STATUS_DLL_NOT_FOUND / 0xC0000135).
+      const env: NodeJS.ProcessEnv = { ...process.env };
+      const pathKeys = Object.keys(env).filter((key) => key.toLowerCase() === "path");
+      const existing = pathKeys
+        .map((key) => env[key])
+        .find((value): value is string => Boolean(value)) || "";
+      for (const key of pathKeys) delete env[key];
+      env.PATH = `${libDir};${existing}`;
+      return env;
+    }
+  } catch { /* ignore */ }
+  return process.env;
 }
 
 export function isAsrConfigured(): boolean {

@@ -18,14 +18,49 @@ let onAudioError: ((message: string) => void) | null = null;
 
 let startTimeout: NodeJS.Timeout | null = null;
 let stopTimeout: NodeJS.Timeout | null = null;
+let audioRecycleTimer: NodeJS.Timeout | null = null;
 let pendingStartAfterStop = false;
 let wakeWordCaptureEnabled = false;
+let recordingGeneration = 0;
+let activeRecordingGeneration = 0;
+
+function cancelAudioRecycle(): void {
+  if (audioRecycleTimer) {
+    clearTimeout(audioRecycleTimer);
+    audioRecycleTimer = null;
+  }
+}
+
+export function destroyAudioWindow(): void {
+  cancelAudioRecycle();
+  if (audioWindow && !audioWindow.isDestroyed()) {
+    log("[recorder] Recycling audioWindow after 30s idle");
+    audioWindow.removeAllListeners();
+    audioWindow.webContents?.removeAllListeners();
+    audioWindow.destroy();
+  }
+  audioWindow = null;
+  isReady = false;
+}
+
+function scheduleAudioRecycle(): void {
+  cancelAudioRecycle();
+  if (!wakeWordCaptureEnabled && currentState === RecorderState.IDLE) {
+    audioRecycleTimer = setTimeout(() => {
+      audioRecycleTimer = null;
+      destroyAudioWindow();
+    }, 30000);
+  }
+}
 
 function transition(nextState: RecorderState): void {
   const prevState = currentState;
   if (prevState === nextState) return;
   currentState = nextState;
   log(`[recorder] State transition: ${prevState} -> ${nextState}`);
+  if (nextState === RecorderState.IDLE) {
+    scheduleAudioRecycle();
+  }
 }
 
 export function getRecorderState(): RecorderState {
@@ -49,31 +84,46 @@ export function initAudioRecorder(
   ipcMain.removeAllListeners("audio:ready");
   ipcMain.removeAllListeners("audio:stopped");
 
-  ipcMain.on(IPC_CHANNELS.AUDIO_DATA, (_event, base64: string) => {
-    // The renderer only streams while recording or while wake-word monitoring
-    // is enabled. Idle wake-word audio must continue reaching the monitor.
+  ipcMain.on(IPC_CHANNELS.AUDIO_DATA, (_event, base64: string, generation = 0) => {
+    if (
+      currentState !== RecorderState.IDLE &&
+      Number(generation) !== activeRecordingGeneration
+    ) {
+      log(`[recorder] Ignoring stale audio data generation=${generation}, active=${activeRecordingGeneration}`);
+      return;
+    }
     if (onAudioData) {
       onAudioData(Buffer.from(base64, "base64"));
     }
   });
 
-  ipcMain.on(IPC_CHANNELS.AUDIO_ERROR, (_event, message: string) => {
+  ipcMain.on(IPC_CHANNELS.AUDIO_ERROR, (_event, message: string, generation = 0) => {
+    if (
+      currentState !== RecorderState.IDLE &&
+      Number(generation) !== activeRecordingGeneration
+    ) {
+      log(`[recorder] Ignoring stale audio error generation=${generation}, active=${activeRecordingGeneration}`);
+      return;
+    }
     log(`[recorder] IPC Audio Error received: ${message}`);
 
-    // Clear any pending timeouts
     if (startTimeout) { clearTimeout(startTimeout); startTimeout = null; }
     if (stopTimeout) { clearTimeout(stopTimeout); stopTimeout = null; }
     pendingStartAfterStop = false;
 
     transition(RecorderState.IDLE);
+    activeRecordingGeneration = 0;
     if (onAudioError) {
       onAudioError(message);
     }
   });
 
-  // Handle ACK events from renderer
-  ipcMain.on("audio:ready", () => {
-    log(`[recorder] IPC audio:ready received.`);
+  ipcMain.on("audio:ready", (_event, generation = 0) => {
+    log(`[recorder] IPC audio:ready received generation=${generation}.`);
+    if (Number(generation) !== activeRecordingGeneration) {
+      log(`[recorder] Ignoring stale audio:ready generation=${generation}, active=${activeRecordingGeneration}`);
+      return;
+    }
     if (currentState === RecorderState.STARTING) {
       if (startTimeout) {
         clearTimeout(startTimeout);
@@ -85,14 +135,19 @@ export function initAudioRecorder(
     }
   });
 
-  ipcMain.on("audio:stopped", () => {
-    log(`[recorder] IPC audio:stopped received.`);
+  ipcMain.on("audio:stopped", (_event, generation = 0) => {
+    log(`[recorder] IPC audio:stopped received generation=${generation}.`);
+    if (Number(generation) !== activeRecordingGeneration) {
+      log(`[recorder] Ignoring stale audio:stopped generation=${generation}, active=${activeRecordingGeneration}`);
+      return;
+    }
     if (currentState === RecorderState.STOPPING) {
       if (stopTimeout) {
         clearTimeout(stopTimeout);
         stopTimeout = null;
       }
       transition(RecorderState.IDLE);
+      activeRecordingGeneration = 0;
       if (pendingStartAfterStop) {
         pendingStartAfterStop = false;
         log(`[recorder] Executing queued startRecording.`);
@@ -103,11 +158,14 @@ export function initAudioRecorder(
     }
   });
 
-  // Pre-create audio window so it's ready when user presses hotkey
-  ensureAudioWindow();
+  // If wake word is enabled, ensure audio window is active; otherwise keep lazy
+  if (wakeWordCaptureEnabled) {
+    ensureAudioWindow();
+  }
 }
 
 export function ensureAudioWindow(): BrowserWindow {
+  cancelAudioRecycle();
   if (audioWindow && !audioWindow.isDestroyed()) {
     return audioWindow;
   }
@@ -146,6 +204,10 @@ export function ensureAudioWindow(): BrowserWindow {
   return audioWindow;
 }
 
+export function getAudioWindow(): BrowserWindow | null {
+  return audioWindow;
+}
+
 function sendToAudioWindow(channel: string, ...args: unknown[]): void {
   try {
     const win = ensureAudioWindow();
@@ -165,9 +227,19 @@ function sendToAudioWindow(channel: string, ...args: unknown[]): void {
 export function setWakeWordCaptureEnabled(enabled: boolean): void {
   wakeWordCaptureEnabled = enabled;
   log(`[recorder] Wake-word microphone capture enabled=${enabled}`);
-  const win = ensureAudioWindow();
-  if (isReady && !win.isDestroyed() && !win.webContents.isDestroyed()) {
-    win.webContents.send(IPC_CHANNELS.AUDIO_WAKE_WORD_ENABLED, enabled);
+  if (enabled) {
+    cancelAudioRecycle();
+    const win = ensureAudioWindow();
+    if (isReady && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+      win.webContents.send(IPC_CHANNELS.AUDIO_WAKE_WORD_ENABLED, enabled);
+    }
+  } else {
+    if (audioWindow && !audioWindow.isDestroyed() && isReady) {
+      audioWindow.webContents.send(IPC_CHANNELS.AUDIO_WAKE_WORD_ENABLED, false);
+    }
+    if (currentState === RecorderState.IDLE) {
+      scheduleAudioRecycle();
+    }
   }
 }
 
@@ -184,6 +256,7 @@ export function startRecording(): void {
   }
 
   transition(RecorderState.STARTING);
+  activeRecordingGeneration = ++recordingGeneration;
 
   // Set a safety timeout for STARTING state (e.g. if mic permission denied without error, or hangs)
   if (startTimeout) clearTimeout(startTimeout);
@@ -193,14 +266,15 @@ export function startRecording(): void {
       startTimeout = null;
       // A timeout must also cancel the renderer-side desired start; otherwise
       // it can keep capturing and poison the next recording attempt.
-      sendToAudioWindow(IPC_CHANNELS.STOP_RECORDING);
+      sendToAudioWindow(IPC_CHANNELS.STOP_RECORDING, activeRecordingGeneration);
       transition(RecorderState.IDLE);
+      activeRecordingGeneration = 0;
       if (onAudioError) {
         onAudioError("启动录音超时，请检查麦克风权限或重新尝试");
       }
     }
   }, 10000);
-  sendToAudioWindow(IPC_CHANNELS.START_RECORDING);
+  sendToAudioWindow(IPC_CHANNELS.START_RECORDING, activeRecordingGeneration);
 }
 
 export function stopRecording(): void {
@@ -219,7 +293,7 @@ export function stopRecording(): void {
   }
 
   transition(RecorderState.STOPPING);
-  sendToAudioWindow(IPC_CHANNELS.STOP_RECORDING);
+  sendToAudioWindow(IPC_CHANNELS.STOP_RECORDING, activeRecordingGeneration);
 
   // Fallback timeout to ensure we return to IDLE even if renderer fails to send ACK
   if (stopTimeout) clearTimeout(stopTimeout);
@@ -228,6 +302,7 @@ export function stopRecording(): void {
       log(`[recorder] Fallback: audio:stopped ACK timeout. Force transitioning to IDLE.`);
       stopTimeout = null;
       transition(RecorderState.IDLE);
+      activeRecordingGeneration = 0;
       if (pendingStartAfterStop) {
         pendingStartAfterStop = false;
         log(`[recorder] Executing queued startRecording (fallback path).`);

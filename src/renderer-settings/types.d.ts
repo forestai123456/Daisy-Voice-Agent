@@ -12,7 +12,9 @@ export interface DiriAPI {
   sendAudioData: (base64: string) => void;
   sendAudioError: (message: string) => void;
   sendRendererError: (message: string) => void;
+  sendRendererLog: (message: string) => void;
   sendTtsPlayEnded: () => void;
+  muteCurrentTts: () => void;
 
   getWhisperStatus: (modelName?: string) => Promise<{
     cliInstalled: boolean;
@@ -25,7 +27,7 @@ export interface DiriAPI {
     cb: (p: { percent: number; status: string }) => void
   ) => () => void;
 
-  captureShortcut: () => void;
+  captureShortcut: (mode: "single" | "combo") => void;
   cancelShortcutCapture: () => void;
   onShortcutCaptured: (
     cb: (payload: { keyName: string; cancelled?: boolean }) => void

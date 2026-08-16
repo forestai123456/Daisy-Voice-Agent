@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { ChatMessage, DeepSeekClient } from "./deepseek";
 import { SYSTEM_PROMPT } from "./system-prompt";
+import { stripFinderSelectionContext } from "../control/finderSelection";
 
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_HISTORY_TOKENS_ESTIMATE = 20000;
@@ -44,11 +45,16 @@ export class ConversationManager {
   }
 
   getMessages(): ChatMessage[] {
+    this.stripTransientFinderSelectionContexts();
     return this.messages;
   }
 
   setMessages(newMessages: ChatMessage[]): void {
-    this.messages = [...newMessages];
+    this.messages = newMessages.map((message) => (
+      message.role === "user"
+        ? { ...message, content: stripFinderSelectionContext(message.content) }
+        : message
+    ));
     this.trimHistory();
     this.lastActiveAt = Date.now();
   }
@@ -71,6 +77,14 @@ export class ConversationManager {
       tool_call_id: toolCallId,
     });
     this.lastActiveAt = Date.now();
+  }
+
+  private stripTransientFinderSelectionContexts(): void {
+    this.messages = this.messages.map((message) => (
+      message.role === "user"
+        ? { ...message, content: stripFinderSelectionContext(message.content) }
+        : message
+    ));
   }
 
   private trimHistory(): void {

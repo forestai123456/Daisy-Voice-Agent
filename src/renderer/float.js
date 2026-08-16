@@ -148,6 +148,39 @@ function hexToRgb(hex) {
   };
 }
 
+const targetFpsConfig = {
+  idle: 12,
+  thinking: 18,
+  error: 18,
+  listening: 24,
+  speaking: 24
+};
+
+let animFrameId = null;
+
+function startRenderLoop() {
+  if (isLoopRunning) return;
+  if (!visible || document.hidden) return;
+  isLoopRunning = true;
+  lastFrameTime = performance.now();
+  if (animFrameId) {
+    cancelAnimationFrame(animFrameId);
+    animFrameId = null;
+  }
+  animFrameId = requestAnimationFrame(render);
+}
+
+function stopRenderLoop() {
+  isLoopRunning = false;
+  if (animFrameId) {
+    cancelAnimationFrame(animFrameId);
+    animFrameId = null;
+  }
+  if (canvas && ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+}
+
 // ── IPC 通信 ──
 diriAPI.onStateUpdate((payload) => {
   try {
@@ -169,31 +202,37 @@ diriAPI.onShowWindow(() => {
     targetWakeScale = 90 / 120;
   }, 1000);
 
-  if (!isLoopRunning) {
-    isLoopRunning = true;
-    lastFrameTime = performance.now();
-    render();
-  }
+  startRenderLoop();
 });
 
 diriAPI.onHideWindow(() => {
   visible = false;
   if (wakeShrinkTimer) { clearTimeout(wakeShrinkTimer); wakeShrinkTimer = null; }
+  stopRenderLoop();
 });
 
-diriAPI.onSetDocked((docked) => {
-  const canvasElement = document.getElementById("orbCanvas");
-  if (canvasElement) {
-    if (docked) {
-      canvasElement.classList.add("docked");
-    } else {
-      canvasElement.classList.remove("docked");
-    }
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopRenderLoop();
+  } else if (visible) {
+    startRenderLoop();
   }
 });
 
 function logToMain(msg) {
   diriAPI.sendRendererLog("FLOAT_LOG: " + msg);
+}
+
+// TTS is application feedback rather than music or video. Keep this renderer
+// out of the browser Media Session API as a renderer-side fallback to the
+// Windows Chromium feature switch configured in the main process.
+function clearSystemMediaSession() {
+  if (!navigator.mediaSession) return;
+  try { navigator.mediaSession.metadata = null; } catch {}
+  try { navigator.mediaSession.playbackState = "none"; } catch {}
+  for (const action of ["play", "pause", "previoustrack", "nexttrack", "seekbackward", "seekforward", "seekto", "stop"]) {
+    try { navigator.mediaSession.setActionHandler(action, null); } catch {}
+  }
 }
 
 diriAPI.onTtsPlay((filePath) => {
@@ -210,7 +249,8 @@ diriAPI.onTtsPlay((filePath) => {
 
   interrupted = false;
   currentAudioPath = filePath;
-
+  clearSystemMediaSession();
+  
   const loadStartTime = performance.now();
   currentAudio = new Audio("file://" + filePath);
   logToMain(`[TTS_PERF] Audio Loaded (instantiation took ${(performance.now() - loadStartTime).toFixed(1)}ms): ${filePath}`);
@@ -222,6 +262,8 @@ diriAPI.onTtsPlay((filePath) => {
   currentAudio.addEventListener("canplaythrough", () => {
     logToMain(`[TTS_PERF] canplaythrough event fired for ${filePath}`);
   });
+
+  currentAudio.addEventListener("playing", clearSystemMediaSession);
 
   try {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -246,11 +288,12 @@ diriAPI.onTtsPlay((filePath) => {
     currentAudioPath = null;
     cleanupAudio();
   };
-
+  
   logToMain(`[TTS_PERF] Calling play() for ${filePath}`);
   const playStartTime = performance.now();
   currentAudio.play()
     .then(() => {
+      clearSystemMediaSession();
       logToMain(`[TTS_PERF] play() Promise resolved in ${(performance.now() - playStartTime).toFixed(1)}ms for ${filePath}`);
     })
     .catch((err) => {
@@ -275,6 +318,7 @@ diriAPI.onTtsEnd(() => {
 });
 
 function cleanupAudio() {
+  clearSystemMediaSession();
   if (audioSource) { try { audioSource.disconnect(); } catch {} audioSource = null; }
   if (analyser) { try { analyser.disconnect(); } catch {} analyser = null; }
   if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
@@ -297,85 +341,96 @@ function getAudioVolume() {
 }
 
 // ── 渲染主循环 ──
-function render() {
-  const w = canvas.width / dpr;
-  const h = canvas.height / dpr;
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  const opacityFactor = visible ? 0.25 : 0.15;
-  const slideFactor = visible ? 0.38 : 0.22;
-
-  opacity = lerp(opacity, visible ? 1 : 0, opacityFactor);
-  const targetSlideOffset = visible ? 0 : -100;
-  slideOffset = lerp(slideOffset, targetSlideOffset, slideFactor);
-
-  if (opacity < 0.003 && !visible) {
-    isLoopRunning = false;
-    return; // 面板不可见且已完全淡出时，完全停止渲染循环，节省 CPU 资源
+function render(now = performance.now()) {
+  if (!isLoopRunning || !visible || document.hidden) {
+    stopRenderLoop();
+    return;
   }
 
-  const rawVolume = getAudioVolume();
-  smoothedVolume = lerp(smoothedVolume, rawVolume, 0.08);
+  const targetFps = targetFpsConfig[currentState] || 12;
+  const frameInterval = 1000 / targetFps;
+  const elapsed = now - lastFrameTime;
 
-  const now = performance.now();
-  const rawDt = (now - lastFrameTime) / 1000;
-  lastFrameTime = now;
-  const dt = Math.min(0.08, rawDt) * speedMultiplier;
+  if (elapsed >= frameInterval) {
+    lastFrameTime = now - (elapsed % frameInterval);
 
-  const targetConfig = targetConfigs[currentState] || targetConfigs.idle;
-  animSpeed = lerp(animSpeed, targetConfig.speed, 0.04);
-  animSpread = lerp(animSpread, targetConfig.spread, 0.04);
-  animPulse = lerp(animPulse, targetConfig.pulse, 0.04);
-  animRotation = lerp(animRotation, targetConfig.rotation, 0.03);
+    const w = canvas.width / dpr;
+    const h = canvas.height / dpr;
 
-  gaseousTime += animSpeed * dt * 60;
-  globalRotationAngle += animRotation * dt * 9;
-  time += dt * 60;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  let baseScale = 1.0;
-  if (currentState === 'speaking') baseScale += smoothedVolume * 0.11;
-  else if (currentState === 'listening') baseScale += smoothedVolume * 0.07;
-  const breath = 1.0 + Math.sin(time * 0.4) * animPulse;
-  orbScale = lerp(orbScale, baseScale * breath, 0.04);
-  wakeScale = lerp(wakeScale, targetWakeScale, 0.04);
+    const opacityFactor = visible ? 0.25 : 0.15;
+    const slideFactor = visible ? 0.38 : 0.22;
 
-  let shakeX = 0, shakeY = 0;
-  if (currentState === 'error') {
-    shakeX = Math.sin(time * 65) * 2.5;
-    shakeY = Math.cos(time * 55) * 2.5;
+    opacity = lerp(opacity, visible ? 1 : 0, opacityFactor);
+    const targetSlideOffset = visible ? 0 : -100;
+    slideOffset = lerp(slideOffset, targetSlideOffset, slideFactor);
+
+    if (opacity < 0.003 && !visible) {
+      stopRenderLoop();
+      return;
+    }
+
+    const rawVolume = getAudioVolume();
+    smoothedVolume = lerp(smoothedVolume, rawVolume, 0.08);
+
+    const rawDt = elapsed / 1000;
+    const dt = Math.min(0.08, rawDt) * speedMultiplier;
+
+    const targetConfig = targetConfigs[currentState] || targetConfigs.idle;
+    animSpeed = lerp(animSpeed, targetConfig.speed, 0.04);
+    animSpread = lerp(animSpread, targetConfig.spread, 0.04);
+    animPulse = lerp(animPulse, targetConfig.pulse, 0.04);
+    animRotation = lerp(animRotation, targetConfig.rotation, 0.03);
+
+    gaseousTime += animSpeed * dt * 60;
+    globalRotationAngle += animRotation * dt * 9;
+    time += dt * 60;
+
+    let baseScale = 1.0;
+    if (currentState === 'speaking') baseScale += smoothedVolume * 0.11;
+    else if (currentState === 'listening') baseScale += smoothedVolume * 0.07;
+    const breath = 1.0 + Math.sin(time * 0.4) * animPulse;
+    orbScale = lerp(orbScale, baseScale * breath, 0.04);
+    wakeScale = lerp(wakeScale, targetWakeScale, 0.04);
+
+    let shakeX = 0, shakeY = 0;
+    if (currentState === 'error') {
+      shakeX = Math.sin(time * 65) * 2.5;
+      shakeY = Math.cos(time * 55) * 2.5;
+    }
+
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.scale(dpr, dpr);
+    ctx.translate(w / 2 + shakeX, h / 2 + shakeY + slideOffset);
+    ctx.scale(orbScale * wakeScale, orbScale * wakeScale);
+    ctx.translate(-w / 2, -h / 2);
+
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) / 2 - 6;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.clip();
+
+    const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+    drawSphereBase(cx, cy, radius, currentState);
+    drawNeonFilaments(cx, cy, radius, smoothedVolume, currentState);
+    drawInnerShadow(cx, cy, radius, isDark);
+    drawGlassWallRefraction(cx, cy, radius);
+
+    ctx.restore();
+
+    drawGlassHighlights(cx, cy, radius, currentState, isDark);
+    ctx.restore();
   }
 
-  ctx.save();
-  ctx.globalAlpha = opacity;
-  ctx.scale(dpr, dpr);
-  ctx.translate(w / 2 + shakeX, h / 2 + shakeY + slideOffset);
-  ctx.scale(orbScale * wakeScale, orbScale * wakeScale);
-  ctx.translate(-w / 2, -h / 2);
-
-  const cx = w / 2;
-  const cy = h / 2;
-  const radius = Math.min(w, h) / 2 - 6;
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-  ctx.clip();
-
-  const isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-
-  drawSphereBase(cx, cy, radius, currentState);
-  drawNeonFilaments(cx, cy, radius, smoothedVolume, currentState);
-  drawInnerShadow(cx, cy, radius, isDark);
-  drawGlassWallRefraction(cx, cy, radius);
-
-  ctx.restore();
-
-  drawGlassHighlights(cx, cy, radius, currentState, isDark);
-  ctx.restore();
-
-  if (isLoopRunning) {
-    requestAnimationFrame(render);
+  if (isLoopRunning && visible && !document.hidden) {
+    animFrameId = requestAnimationFrame(render);
   }
 }
 
@@ -391,7 +446,7 @@ function drawSphereBase(cx, cy, radius, activeState) {
     cx - radius, cy - radius,
     cx + radius, cy + radius
   );
-
+  
   baseGrad.addColorStop(0, palette.linearGradient.topLeft);
   baseGrad.addColorStop(0.5, palette.linearGradient.middle);
   baseGrad.addColorStop(1, palette.linearGradient.bottomRight);
@@ -439,10 +494,10 @@ function drawNeonFilaments(cx, cy, radius, vol, activeState) {
         const x_local = Math.cos(angle) * r;
         const y_local = Math.sin(angle) * r * cos_tilt;
         const tilt_angle = (i === 0) ? -Math.PI / 12 : (i === 1 ? Math.PI / 3.2 : -Math.PI / 3.2);
-
+        
         const x = cx + x_local * Math.cos(tilt_angle) - y_local * Math.sin(tilt_angle);
         const y = cy + x_local * Math.sin(tilt_angle) + y_local * Math.cos(tilt_angle);
-
+        
         if (j === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
@@ -474,7 +529,7 @@ function drawInnerShadow(cx, cy, radius, isDark) {
   innerShadow.addColorStop(0.8, "rgba(0, 0, 0, 0)");
   innerShadow.addColorStop(0.92, isDark ? "rgba(0, 0, 0, 0.04)" : "rgba(0, 0, 0, 0.01)");
   innerShadow.addColorStop(1, isDark ? "rgba(0, 0, 0, 0.12)" : "rgba(0, 0, 0, 0.04)");
-
+  
   ctx.fillStyle = innerShadow;
   ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
 }
@@ -491,7 +546,7 @@ function drawGlassWallRefraction(cx, cy, radius) {
   wallGrad.addColorStop(0, "rgba(255, 255, 255, 0)");
   wallGrad.addColorStop(0.85, "rgba(255, 255, 255, 0.02)");
   wallGrad.addColorStop(1, "rgba(255, 255, 255, 0.12)");
-
+  
   ctx.fillStyle = wallGrad;
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -517,28 +572,31 @@ function drawGlassHighlights(cx, cy, radius, activeState, isDark) {
 // ── 鼠标穿透智能判断 ──
 let isMouseOverInteractiveElement = false;
 window.addEventListener("mousemove", (e) => {
-  const isOverOrb = isPointInElement(e.clientX, e.clientY, orbContainer);
+  const isOverOrb = isPointInOrb(e.clientX, e.clientY);
   if (isOverOrb !== isMouseOverInteractiveElement) {
     isMouseOverInteractiveElement = isOverOrb;
     diriAPI.setIgnoreMouse(!isMouseOverInteractiveElement);
   }
 });
 
-function isPointInElement(x, y, el) {
-  if (!el || el.style.display === "none" || el.style.opacity === "0" || el.classList.contains("hidden")) return false;
-  const rect = el.getBoundingClientRect();
-  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+function isPointInOrb(x, y) {
+  if (!visible || !canvas) return false;
+
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  const radiusX = rect.width / 2;
+  const radiusY = rect.height / 2;
+  const normalizedX = (x - (rect.left + radiusX)) / radiusX;
+  const normalizedY = (y - (rect.top + radiusY)) / radiusY;
+  return normalizedX * normalizedX + normalizedY * normalizedY <= 1;
 }
 
 // A click while Daisy is delivering a final answer only mutes that answer's
-// speech. When idle, clicking opens the settings window.
+// speech. The main process intentionally keeps the answer state and panel open.
 canvas.addEventListener("click", () => {
   if (currentState === "speaking") {
     diriAPI.muteCurrentTts();
-  } else {
-    diriAPI.openSettings();
   }
 });
 
 resizeCanvas();
-render();

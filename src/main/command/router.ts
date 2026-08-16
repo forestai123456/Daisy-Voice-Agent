@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { log, logError } from "../utils/logger";
 import { getBundledBin } from "../config/env";
+import { describeExternalUrlForLog, openDefaultBrowser, openExternalUrl } from "../control/openExternal";
+import { diagnoseWindowsApp, resolveAndLaunchWindowsApp, resolveWindowsApp, warmWindowsAppIndex } from "../control/windowsAppResolver";
 
 const execAsync = promisify(exec);
 
@@ -27,13 +29,61 @@ export interface AppEntry {
   aliases: string[];   // lowercase aliases for matching
 }
 
-const APP_DIRS = [
-  "/Applications",
-  "/System/Applications",
-  "/System/Applications/Utilities",
-  path.join(process.env.HOME || "", "Applications"),
-  "/Volumes/外接盘/Applications",
-];
+/**
+ * Recognise a question about an application's launch failure, not a request
+ * to open it.  This runs before every action route so “看一下微信为什么打不开”
+ * cannot be mistaken for “打开微信”.
+ */
+export function parseAppDiagnosisRequest(text: string): string | null {
+  const normalized = text.trim().replace(/[\s,，。！!？?、~]+$/, "");
+  const question = /^(?:你\s*)?(?:(?:帮我|麻烦|请)\s*)?(?:(?:帮我)?(?:看一下|看看|看下|检查一下|检查|排查一下|排查|诊断一下|诊断)\s*)?(.+?)\s*(?:为什么|为何|怎么|咋)\s*(?:打不开|打开不了|无法打开|不能打开|启动不了|无法启动|没反应|闪退)(?:了)?$/;
+  const shortForm = /^(?:你\s*)?(?:(?:帮我|麻烦|请)\s*)?(.+?)\s*(?:打不开|打开不了|无法打开|不能打开|启动不了|无法启动|没反应|闪退)(?:了)?(?:\s*(?:怎么回事|为什么|咋回事))?$/;
+  const match = normalized.match(question) ?? normalized.match(shortForm);
+  if (!match) return null;
+
+  const appName = match[1]
+    .replace(/^(?:(?:帮我)?(?:看一下|看看|看下|检查一下|检查|排查一下|排查|诊断一下|诊断)\s*)+/, "")
+    .replace(/^(?:我的|这个|那个|一下)\s*/, "")
+    .trim();
+  if (!appName || appName.length > 80 || /[，,。！!？?]/.test(appName)) return null;
+  return appName;
+}
+
+function formatWindowsAppDiagnosis(requestedName: string, diagnosis: Awaited<ReturnType<typeof diagnoseWindowsApp>>): string {
+  if (!diagnosis.found || !diagnosis.target) {
+    return `已检查 ${requestedName}：未在开始菜单、已安装程序和 Windows 应用注册表中找到它；我没有尝试启动它。请确认名称或先确认该程序已安装。`;
+  }
+
+  const appName = diagnosis.target.displayName;
+  if (diagnosis.launchTargetExists === false) {
+    return `已检查 ${appName}：系统记录的启动文件已经不存在或无法访问，所以它无法正常打开；我没有尝试启动它。建议从官方渠道修复或重新安装该程序。`;
+  }
+
+  if (diagnosis.running) {
+    return `已检查 ${appName}：启动项正常，但它的进程当前仍在运行。这通常表示窗口未显示或程序卡住；我没有尝试启动、结束或重启它。你可以明确说“关闭 ${appName}”或“打开 ${appName}”继续处理。`;
+  }
+
+  if (diagnosis.recentFailures.length > 0) {
+    return `已检查 ${appName}：启动项存在、当前未运行；Windows 在最近 7 天记录到 ${diagnosis.recentFailures.length} 条相关崩溃或挂起事件。我没有尝试启动它。建议先从官方渠道修复或重新安装；如需我测试启动，请明确说“打开 ${appName}”。`;
+  }
+
+  return `已检查 ${appName}：启动项存在、当前未运行，Windows 最近 7 天没有找到相关崩溃或挂起记录。我没有尝试启动它；若仍打不开，请明确说“打开 ${appName}”让我测试启动。`;
+}
+
+const APP_DIRS = process.platform === "win32"
+  ? [
+      path.join(process.env.ProgramFiles || "C:\\Program Files", ""),
+      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", ""),
+      path.join(process.env.LOCALAPPDATA || "", "Programs"),
+      path.join(process.env.APPDATA || "", "Microsoft\\Windows\\Start Menu\\Programs"),
+      path.join(process.env.ProgramData || "C:\\ProgramData", "Microsoft\\Windows\\Start Menu\\Programs"),
+    ]
+  : [
+      "/Applications",
+      "/System/Applications",
+      "/System/Applications/Utilities",
+      path.join(process.env.HOME || "", "Applications"),
+    ];
 
 let appCache: AppEntry[] = [];
 let lastScanTime = 0;
@@ -43,23 +93,72 @@ function scanApps(): AppEntry[] {
   const apps: AppEntry[] = [];
   const seen = new Set<string>();
 
-  for (const dir of APP_DIRS) {
-    if (!fs.existsSync(dir)) continue;
-    try {
-      const entries = fs.readdirSync(dir);
-      for (const entry of entries) {
-        if (!entry.endsWith(".app")) continue;
-        const fullPath = path.join(dir, entry);
-        const name = entry.replace(/\.app$/, "");
-        const key = name.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
+  if (process.platform === "win32") {
+    const startMenuDirs = [
+      path.join(process.env.APPDATA || "", "Microsoft\\Windows\\Start Menu\\Programs"),
+      path.join(process.env.ProgramData || "C:\\ProgramData", "Microsoft\\Windows\\Start Menu\\Programs"),
+    ];
+    const programsDirs = [
+      path.join(process.env.ProgramFiles || "C:\\Program Files", ""),
+      path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", ""),
+      path.join(process.env.LOCALAPPDATA || "", "Programs"),
+    ];
 
-        const aliases = generateAliases(name);
-        apps.push({ name, path: fullPath, aliases });
+    const scanDir = (dir: string, depth: number, maxDepth: number, ext: string) => {
+      if (depth > maxDepth) return;
+      if (!fs.existsSync(dir)) return;
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        return;
       }
-    } catch {
-      // ignore
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry);
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(fullPath);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          scanDir(fullPath, depth + 1, maxDepth, ext);
+        } else if (entry.toLowerCase().endsWith(ext)) {
+          const name = entry.replace(new RegExp(ext.replace(/\./g, "\\.") + "$", "i"), "");
+          const key = name.toLowerCase();
+          if (seen.has(key) || key.length === 0) continue;
+          seen.add(key);
+          const aliases = generateAliases(name);
+          apps.push({ name, path: fullPath, aliases });
+        }
+      }
+    };
+
+    for (const dir of startMenuDirs) {
+      scanDir(dir, 0, 2, ".lnk");
+    }
+    for (const dir of programsDirs) {
+      scanDir(dir, 0, 1, ".exe");
+    }
+  } else {
+    for (const dir of APP_DIRS) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const entries = fs.readdirSync(dir);
+        for (const entry of entries) {
+          if (!entry.endsWith(".app")) continue;
+          const fullPath = path.join(dir, entry);
+          const name = entry.replace(/\.app$/, "");
+          const key = name.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const aliases = generateAliases(name);
+          apps.push({ name, path: fullPath, aliases });
+        }
+      } catch {
+        // ignore
+      }
     }
   }
 
@@ -214,6 +313,8 @@ export function matchApp(target: string): AppEntry | null {
 export interface CommandResult {
   handled: boolean;
   action?: string;
+  /** A local, user-readable failure that must not be retried by the LLM. */
+  message?: string;
 }
 
 interface KnownSiteSearch {
@@ -238,7 +339,7 @@ const SITE_SEARCH_PROVIDERS: SiteSearchProvider[] = [
   { siteName: "知乎", aliases: ["知乎", "zhihu"], buildUrl: q => `https://www.zhihu.com/search?type=content&q=${encodeURIComponent(q)}` },
   { siteName: "百度", aliases: ["百度", "baidu"], buildUrl: q => `https://www.baidu.com/s?wd=${encodeURIComponent(q)}`, homeUrl: "https://www.baidu.com/" },
   { siteName: "豆瓣", aliases: ["豆瓣", "douban"], buildUrl: q => `https://www.douban.com/search?q=${encodeURIComponent(q)}` },
-  { siteName: "淘宝", aliases: ["淘宝", "taobao"], buildUrl: q => `https://s.taobao.com/search?q=${encodeURIComponent(q)}` },
+  { siteName: "淘宝", aliases: ["淘宝", "taobao"], buildUrl: q => `https://s.taobao.com/search?q=${encodeURIComponent(q)}`, homeUrl: "https://www.taobao.com/" },
   { siteName: "京东", aliases: ["京东", "jd"], buildUrl: q => `https://search.jd.com/Search?keyword=${encodeURIComponent(q)}` },
   { siteName: "腾讯视频", aliases: ["腾讯视频", "qq视频", "tencentvideo"], buildUrl: q => `https://v.qq.com/x/search/?q=${encodeURIComponent(q)}`, homeUrl: "https://v.qq.com/" },
   { siteName: "爱奇艺", aliases: ["爱奇艺", "iqiyi"], buildUrl: q => `https://so.iqiyi.com/so/q_${encodeURIComponent(q)}`, homeUrl: "https://www.iqiyi.com/" },
@@ -341,15 +442,13 @@ const SITE_SEARCH_PROVIDERS: SiteSearchProvider[] = [
   { siteName: "X", aliases: ["x", "推特", "twitter"], buildUrl: q => `https://x.com/search?q=${encodeURIComponent(q)}&src=typed_query` },
   { siteName: "Reddit", aliases: ["reddit"], buildUrl: q => `https://www.reddit.com/search/?q=${encodeURIComponent(q)}` },
   { siteName: "维基百科", aliases: ["维基百科", "维基", "wikipedia"], buildUrl: q => `https://zh.wikipedia.org/w/index.php?search=${encodeURIComponent(q)}` },
-  { siteName: "GitHub", aliases: ["github"], buildUrl: q => `https://github.com/search?q=${encodeURIComponent(q)}` },
+  { siteName: "GitHub", aliases: ["github"], buildUrl: q => `https://github.com/search?q=${encodeURIComponent(q)}`, homeUrl: "https://github.com/" },
   { siteName: "Stack Overflow", aliases: ["stackoverflow"], buildUrl: q => `https://stackoverflow.com/search?q=${encodeURIComponent(q)}` },
   { siteName: "Amazon", aliases: ["amazon", "亚马逊"], buildUrl: q => `https://www.amazon.com/s?k=${encodeURIComponent(q)}` },
   { siteName: "eBay", aliases: ["ebay"], buildUrl: q => `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}` },
   { siteName: "Steam", aliases: ["steam"], buildUrl: q => `https://store.steampowered.com/search/?term=${encodeURIComponent(q)}` },
 ];
 
-// These services have a useful web entry point but do not expose a stable
-// public URL for keyword search. They still support a deterministic "打开…".
 const SITE_HOME_ONLY_PROVIDERS = [
   { siteName: "视频号", aliases: ["视频号", "微信视频号"], homeUrl: "https://channels.weixin.qq.com/" },
   { siteName: "红果免费短剧", aliases: ["红果", "红果短剧", "红果影视", "红果免费短剧"], homeUrl: "https://www.hongguoduanju.com/" },
@@ -369,8 +468,6 @@ function escapeSiteAliasForRegex(alias: string): string {
     .replace(/\s+/g, "\\s*");
 }
 
-// Match the complete site alias before the "搜索" verb. This matters for
-// providers such as "微信搜一搜", whose name itself contains the character “搜”.
 const SITE_SEARCH_ALIAS_PATTERN = SITE_SEARCH_PROVIDERS
   .flatMap((provider) => provider.aliases)
   .sort((a, b) => b.length - a.length)
@@ -384,21 +481,25 @@ function findSiteSearchProvider(name: string): SiteSearchProvider | null {
   ) ?? null;
 }
 
-/**
- * Match short, unambiguous "open a site and search" voice commands locally.
- *
- * These commands used to fall through to the LLM.  If the model interpreted
- * the complete phrase (for example "抖音搜索世界杯") as an application name,
- * it could only open the browser and perform a generic web search instead of
- * navigating to the requested site's search page.
- */
+function getSiteHomeUrl(provider: SiteSearchProvider): string | null {
+  if (provider.homeUrl) return provider.homeUrl;
+  // A provider that only defines an in-site search URL can still be opened
+  // locally at its own origin. This is deterministic and never asks the LLM
+  // to guess a website; explicit homeUrl entries above take precedence.
+  try {
+    const parsed = new URL(provider.buildUrl(""));
+    return `${parsed.origin}/`;
+  } catch {
+    return null;
+  }
+}
+
 export function parseKnownSiteSearch(text: string): KnownSiteSearch | null {
   const normalized = text.trim().replace(/[\s,，。！!？?、~]+$/, "");
   const match = normalized.match(new RegExp(
-    `^(?:帮我|麻烦|请)?\\s*(?:(?:在|用)?\\s*浏览器\\s*(?:里|中|上)?\\s*)?(?:(?:打开|启动|开启|运行|开一下|进入|访问)\\s*)?(?:在\\s*)?(${SITE_SEARCH_ALIAS_PATTERN})\\s*(?:网站|官网)?\\s*(?:上|里|中)?\\s*[，,、]?\\s*(?:(?:然后|再|并且|并)\\s*)?(?:搜索|搜)\\s*(?:一下)?\\s*(.+)$`,
+    `^(?:帮我|麻烦|请)?\\s*(?:(?:打开|启动|开启|运行|开一下)\\s*)?(?:在\\s*)?(${SITE_SEARCH_ALIAS_PATTERN})\\s*(?:网站|官网)?\\s*(?:上|里|中)?\\s*[，,、]?\\s*(?:搜索|搜)\\s*(?:一下)?\\s*(.+)$`,
     "i"
   ));
-
   if (!match) return null;
 
   const [, rawSiteName, rawQuery] = match;
@@ -407,21 +508,21 @@ export function parseKnownSiteSearch(text: string): KnownSiteSearch | null {
 
   const query = rawQuery.trim().replace(/[\s,，。！!？?、~]+$/, "");
   if (!query) return null;
-
-  return {
-    siteName: provider.siteName,
-    query,
-    url: provider.buildUrl(query),
-  };
+  return { siteName: provider.siteName, query, url: provider.buildUrl(query) };
 }
 
 export function findKnownSiteHome(name: string): { siteName: string; url: string } | null {
-  const searchProvider = findSiteSearchProvider(name);
-  if (searchProvider?.homeUrl) {
-    return { siteName: searchProvider.siteName, url: searchProvider.homeUrl };
+  const cleanedName = name
+    .trim()
+    .replace(/(?:官方网站|官网|网站|网页|网址|首页)$/i, "")
+    .trim();
+  const searchProvider = findSiteSearchProvider(cleanedName);
+  const searchProviderHomeUrl = searchProvider ? getSiteHomeUrl(searchProvider) : null;
+  if (searchProvider && searchProviderHomeUrl) {
+    return { siteName: searchProvider.siteName, url: searchProviderHomeUrl };
   }
 
-  const siteKey = normalizeSiteName(name);
+  const siteKey = normalizeSiteName(cleanedName);
   const homeOnlyProvider = SITE_HOME_ONLY_PROVIDERS.find((candidate) =>
     candidate.aliases.some((alias) => normalizeSiteName(alias) === siteKey)
   );
@@ -431,40 +532,70 @@ export function findKnownSiteHome(name: string): { siteName: string; url: string
 }
 
 async function openKnownSiteSearch(search: KnownSiteSearch): Promise<CommandResult> {
-  // This is specifically a website search command, so always navigate the
-  // default browser to the site's own results page.  It does not depend on
-  // an LLM decision or on a native app being installed.
   try {
-    await new Promise<void>((resolve, reject) => {
-      execFile("open", [search.url], (error) => error ? reject(error) : resolve());
-    });
-    log(`CommandRouter: opened ${search.siteName} search for "${search.query}"`);
-    return { handled: true, action: `search:${search.siteName}:${search.query}` };
+    await openExternalUrl(search.url);
+    log(`local-open input=site-search route=known-site-search appMatch=none url=${describeExternalUrlForLog(search.url)} handled=true`);
+    return { handled: true, action: `search:${search.siteName}` };
   } catch (error) {
     logError(`CommandRouter: failed to open ${search.siteName} search`, error);
-    return { handled: false };
+    return { handled: true, action: `search:${search.siteName}:failed`, message: `无法用默认浏览器打开${search.siteName}。请检查默认浏览器设置后重试。` };
   }
 }
 
 async function openKnownSiteHome(site: { siteName: string; url: string }): Promise<CommandResult> {
+  if (process.platform === "win32") {
+    const appLaunch = await resolveAndLaunchWindowsApp(site.siteName);
+    if (appLaunch.launched && appLaunch.target) {
+      log(`local-open input=site-home route=known-site-home appMatch=${appLaunch.match} target=${appLaunch.target.displayName} handled=true`);
+      return { handled: true, action: `open-site-app:${site.siteName}` };
+    }
+    if (appLaunch.found) {
+      log(`local-open input=site-home route=known-site-home appMatch=${appLaunch.match} handled=true launch=false`);
+      return { handled: true, action: `open-site-app:${site.siteName}:failed`, message: `已找到${site.siteName}客户端，但启动失败。请检查应用是否仍可用。` };
+    }
+  }
+
   try {
-    await new Promise<void>((resolve, reject) => {
-      execFile("open", [site.url], (error) => error ? reject(error) : resolve());
-    });
-    log(`CommandRouter: opened ${site.siteName} home page`);
+    await openExternalUrl(site.url);
+    log(`local-open input=site-home route=known-site-home appMatch=none url=${describeExternalUrlForLog(site.url)} handled=true`);
     return { handled: true, action: `open-site:${site.siteName}` };
   } catch (error) {
     logError(`CommandRouter: failed to open ${site.siteName} home page`, error);
-    return { handled: false };
+    return { handled: true, action: `open-site:${site.siteName}:failed`, message: `无法用默认浏览器打开${site.siteName}。请检查默认浏览器设置后重试。` };
   }
 }
 
 async function openApp(name: string): Promise<CommandResult> {
   const isBrowserKeyword = ["browser", "默认浏览器", "浏览器", "default_browser", "default browser"].includes(name.trim().toLowerCase());
-  
+
+  if (process.platform === "win32") {
+    if (isBrowserKeyword) {
+      try {
+        await openDefaultBrowser();
+        log("local-open input=browser route=default-browser appMatch=none handled=true");
+        return { handled: true, action: "open:browser" };
+      } catch (error) {
+        logError("CommandRouter: failed to open Windows default browser", error);
+        return { handled: true, action: "open:browser:failed", message: "无法打开默认浏览器。请检查 Windows 的默认浏览器设置。" };
+      }
+    }
+
+    const appLaunch = await resolveAndLaunchWindowsApp(name);
+    if (appLaunch.launched && appLaunch.target) {
+      log(`local-open input=application route=application appMatch=${appLaunch.match} target=${appLaunch.target.displayName} handled=true`);
+      return { handled: true, action: `open:${appLaunch.target.displayName}` };
+    }
+    if (appLaunch.found) {
+      log(`local-open input=application route=application appMatch=${appLaunch.match} handled=true launch=false`);
+      return { handled: true, action: "open:application:failed", message: `已找到${name}，但启动失败。请检查应用是否仍可用。` };
+    }
+    log("local-open input=application route=application appMatch=none handled=false");
+    return { handled: false };
+  }
+
   if (isBrowserKeyword) {
     try {
-      const { getDefaultBrowserBundleId } = require("../control/macos");
+      const { getDefaultBrowserBundleId } = require("../control/platform");
       const bundleId = await getDefaultBrowserBundleId();
       await execAsync(`open -b "${bundleId}"`);
       log(`CommandRouter: opened default browser (${bundleId})`);
@@ -494,6 +625,24 @@ const BROWSER_APP_NAMES = [
 ];
 
 async function quitAllBrowsers(): Promise<CommandResult> {
+  if (process.platform === "win32") {
+    const browserExes = ["chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "vivaldi.exe"];
+    let quitCount = 0;
+    for (const exe of browserExes) {
+      try {
+        await execAsync(`taskkill /IM "${exe}" /F`, { timeout: 5000 });
+        quitCount++;
+        log(`CommandRouter: quit browser ${exe}`);
+      } catch {
+        // process not running - ignore
+      }
+    }
+    if (quitCount > 0) {
+      return { handled: true, action: `quit:browsers(${quitCount})` };
+    }
+    return { handled: false };
+  }
+
   let quitCount = 0;
   for (const browserName of BROWSER_APP_NAMES) {
     try {
@@ -517,9 +666,39 @@ async function quitAllBrowsers(): Promise<CommandResult> {
 }
 
 async function quitApp(name: string): Promise<CommandResult> {
-  // Special case: "浏览器" → quit ALL running browsers
+  // Special case: "浏览器" -> quit ALL running browsers
   if (name === "浏览器" || name === "browser" || name === "browsers") {
     return await quitAllBrowsers();
+  }
+
+  if (process.platform === "win32") {
+    const resolved = await resolveWindowsApp(name);
+    if (!resolved.found) {
+      log("local-open input=application route=quit appMatch=none handled=false");
+      return { handled: false };
+    }
+    const processName = resolved.target.kind === "exe"
+      ? path.basename(resolved.target.filePath)
+      : resolved.target.kind === "system"
+        ? path.basename(resolved.target.command)
+        : null;
+    if (!processName) {
+      log(`CommandRouter: cannot safely identify a process for ${resolved.target.displayName}`);
+      return { handled: false };
+    }
+    try {
+      await execAsync(`taskkill /IM "${processName}" /F`, { timeout: 5000 });
+      log(`CommandRouter: quit ${resolved.target.displayName}`);
+      return { handled: true, action: `quit:${resolved.target.displayName}` };
+    } catch (err: any) {
+      const code = err?.code ?? 0;
+      if (code === 128) {
+        log(`CommandRouter: quit ${name} (not running)`);
+        return { handled: true, action: "quit:not-running" };
+      }
+      log(`CommandRouter: failed to quit ${name}`);
+      return { handled: true, action: `quit:${name}` };
+    }
   }
 
   const app = matchApp(name);
@@ -563,6 +742,20 @@ async function quitApp(name: string): Promise<CommandResult> {
 }
 
 async function setVolume(direction: "up" | "down" | "mute"): Promise<CommandResult> {
+  if (process.platform === "win32") {
+    try {
+      const vk = direction === "up" ? 0xAF : direction === "down" ? 0xAE : 0xAD;
+      const ps = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class K { [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo); }'; [K]::keybd_event(${vk}, 0, 0, [UIntPtr]::Zero); [K]::keybd_event(${vk}, 0, 2, [UIntPtr]::Zero)`;
+      await new Promise<void>((resolve, reject) => {
+        execFile("powershell", ["-NoProfile", "-Command", ps], (err) => err ? reject(err) : resolve());
+      });
+      log(`CommandRouter: volume ${direction}`);
+      return { handled: true, action: `volume:${direction}` };
+    } catch {
+      return { handled: false };
+    }
+  }
+
   try {
     if (direction === "mute") {
       await execAsync(`osascript -e 'set volume with output muted'`);
@@ -581,6 +774,25 @@ async function setVolume(direction: "up" | "down" | "mute"): Promise<CommandResu
 }
 
 async function controlPlayback(action: "playpause" | "next" | "prev"): Promise<CommandResult> {
+  if (process.platform === "win32") {
+    try {
+      const vkMap: Record<string, number> = {
+        playpause: 0xB3,
+        next: 0xB0,
+        prev: 0xB1,
+      };
+      const vk = vkMap[action];
+      const ps = `Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class K { [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo); }'; [K]::keybd_event(${vk}, 0, 0, [UIntPtr]::Zero); [K]::keybd_event(${vk}, 0, 2, [UIntPtr]::Zero)`;
+      await new Promise<void>((resolve, reject) => {
+        execFile("powershell", ["-NoProfile", "-Command", ps], (err) => err ? reject(err) : resolve());
+      });
+      log(`CommandRouter: playback ${action}`);
+      return { handled: true, action: `playback:${action}` };
+    } catch {
+      return { handled: false };
+    }
+  }
+
   try {
     const keyMap: Record<string, string> = {
       playpause: "space",
@@ -596,6 +808,8 @@ async function controlPlayback(action: "playpause" | "next" | "prev"): Promise<C
 }
 
 async function setDoNotDisturb(enable: boolean): Promise<CommandResult> {
+  if (process.platform !== "darwin") return { handled: false };
+
   const targetVal = enable ? 1 : 0;
   const script = `
 tell application "System Events"
@@ -641,6 +855,8 @@ end tell
 }
 
 async function minimizeAllWindowsExcept(exceptName: string): Promise<CommandResult> {
+  if (process.platform !== "darwin") return { handled: false };
+
   const app = matchApp(exceptName);
   const keepAppName = app ? app.name : exceptName;
   
@@ -668,6 +884,8 @@ end tell
 }
 
 async function minimizeApp(appName: string): Promise<CommandResult> {
+  if (process.platform !== "darwin") return { handled: false };
+
   const app = matchApp(appName);
   const targetName = app ? app.name : appName;
   
@@ -693,6 +911,8 @@ end tell
 }
 
 async function splitScreen(leftName: string, rightName: string): Promise<CommandResult> {
+  if (process.platform !== "darwin") return { handled: false };
+
   const leftApp = matchApp(leftName);
   const rightApp = matchApp(rightName);
   
@@ -739,6 +959,31 @@ end tell
 }
 
 async function saveClipboardImageToDesktop(): Promise<CommandResult> {
+  if (process.platform === "win32") {
+    try {
+      const os = require("node:os");
+      const desktopPath = path.join(os.homedir(), "Desktop");
+      const now = new Date();
+      const dateStr = now.getFullYear() +
+        String(now.getMonth() + 1).padStart(2, '0') +
+        String(now.getDate()).padStart(2, '0') + "_" +
+        String(now.getHours()).padStart(2, '0') +
+        String(now.getMinutes()).padStart(2, '0') +
+        String(now.getSeconds()).padStart(2, '0');
+      const filename = `剪贴板图片_${dateStr}.png`;
+      const targetPath = path.join(desktopPath, filename);
+      const ps = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($null -eq $img) { exit 1 } else { $img.Save('${targetPath.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png) }`;
+      await new Promise<void>((resolve, reject) => {
+        execFile("powershell", ["-NoProfile", "-STA", "-Command", ps], (err) => err ? reject(err) : resolve());
+      });
+      log(`CommandRouter: Saved clipboard image to ${targetPath}`);
+      return { handled: true, action: `clipboard:save-image:${filename}` };
+    } catch (err) {
+      log("CommandRouter: Clipboard does not contain an image or save failed");
+      return { handled: false };
+    }
+  }
+
   try {
     const { clipboard } = require("electron");
     const img = clipboard.readImage();
@@ -790,6 +1035,8 @@ export function isSaveClipboardImageToDesktopCommand(text: string): boolean {
 }
 
 async function switchAudioOutput(target: string): Promise<CommandResult> {
+  if (process.platform !== "darwin") return { handled: false };
+
   try {
     const SW = getBundledBin("SwitchAudioSource");
     const { stdout } = await execAsync(`"${SW}" -a -t output`);
@@ -852,17 +1099,28 @@ async function switchAudioOutput(target: string): Promise<CommandResult> {
 export async function tryLocalCommand(text: string): Promise<CommandResult> {
   const normalized = text.trim().replace(/[\s,，。！!？?、~]+$/, "");
 
-  // "打开抖音搜索世界杯" / "打开微博，搜索世界杯" must enter the
-  // requested site's own search page, rather than becoming a generic web
-  // search selected by the LLM.
+  // Diagnostics are intentionally handled before any command that can launch
+  // an app.  This branch is read-only: it resolves a verified target, checks
+  // whether it exists/runs and inspects recent Windows crash records.
+  const diagnosticName = parseAppDiagnosisRequest(normalized);
+  if (diagnosticName && process.platform === "win32") {
+    const diagnosis = await diagnoseWindowsApp(diagnosticName);
+    log(
+      `local-diagnose route=application found=${diagnosis.found} ` +
+      `running=${diagnosis.running === true} failures=${diagnosis.recentFailures.length} launched=false`,
+    );
+    return {
+      handled: true,
+      action: diagnosis.found ? "diagnose:application" : "diagnose:application:not-found",
+      message: formatWindowsAppDiagnosis(diagnosticName, diagnosis),
+    };
+  }
+
+  // Known site routes always run before generic website wording and before any
+  // application resolver. This prevents "B站" from becoming a guessed b站.exe.
   const knownSiteSearch = parseKnownSiteSearch(normalized);
   if (knownSiteSearch) {
     return await openKnownSiteSearch(knownSiteSearch);
-  }
-
-  // Other website requests still go through the LLM/open_url path.
-  if (/官网|网站|网页|网址|首页|dot com|\.com|\.cn|\.net/i.test(normalized)) {
-    return { handled: false };
   }
 
   // 打开/启动 应用
@@ -871,14 +1129,17 @@ export async function tryLocalCommand(text: string): Promise<CommandResult> {
     const target = m[1].replace(/^(一下|这个|那个)\s*/, "").trim();
     // Make sure it's just an app name, not a complex command
     if (target.length > 0 && !target.match(/[，,。！!？?]/)) {
-      const result = await openApp(target);
-      if (result.handled) return result;
-
-      // Some services (for example 视频号、红果短剧 and 夸克) are websites
-      // without a conventional macOS app. When app matching fails, open their
-      // known web entry directly instead of making the model guess.
       const knownSiteHome = findKnownSiteHome(target);
       if (knownSiteHome) return await openKnownSiteHome(knownSiteHome);
+
+      // Unknown explicit web requests retain the existing LLM fallback, but
+      // only after all known-site mappings have had a chance to handle them.
+      if (/官网|网站|网页|网址|首页|dot com|\.com|\.cn|\.net/i.test(target)) {
+        return { handled: false };
+      }
+
+      const result = await openApp(target);
+      if (result.handled) return result;
     }
   }
 
@@ -969,12 +1230,15 @@ export async function tryLocalCommand(text: string): Promise<CommandResult> {
   // 锁屏 / 息屏
   if (/^(?:电脑|把电脑|笔记本)?\s*(?:锁屏|息屏|锁屏幕|黑屏|锁定屏幕|屏幕关闭|关闭屏幕|休眠屏幕)(?:\s*(?:吧|一下|了))?$/.test(normalized)
     || /^(?:锁屏|息屏|锁屏幕|黑屏)$/.test(normalized)) {
-    try {
-      await execAsync("pmset displaysleepnow");
-      return { handled: true, action: "screen:sleep" };
-    } catch {
-      return { handled: false };
+    if (process.platform === "darwin") {
+      try {
+        await execAsync("pmset displaysleepnow");
+        return { handled: true, action: "screen:sleep" };
+      } catch {
+        return { handled: false };
+      }
     }
+    return { handled: false };
   }
 
   // 音频输出切换
@@ -1011,5 +1275,11 @@ export async function tryLocalCommand(text: string): Promise<CommandResult> {
 
 // Initialize app cache on startup
 export function initCommandRouter(): void {
+  if (process.platform === "win32") {
+    void warmWindowsAppIndex()
+      .then((count) => log(`WindowsAppResolver: indexed ${count} verified launch targets`))
+      .catch((error) => logError("WindowsAppResolver: warmup failed", error));
+    return;
+  }
   ensureCache();
 }

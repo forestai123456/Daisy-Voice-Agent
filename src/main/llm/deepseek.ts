@@ -29,20 +29,14 @@ const SILENT_ACTION_TOOLS = new Set([
   "trim_video",
   "convert_video",
   "convert_document",
-  "edit_document",
+  "office_document",
   "edit_pdf",
   "scrape_url",
-  "get_clipboard_text",
+  "get_clipboard_text"
 ]);
 
-export function getChatCompletionsUrl(baseUrl: string): string {
-  const normalized = baseUrl.trim().replace(/\/+$/, "");
-  return /\/v1$/i.test(normalized)
-    ? `${normalized}/chat/completions`
-    : `${normalized}/v1/chat/completions`;
-}
-
 const INSPECTION_TOOLS = new Set([
+  "diagnose_application",
   "list_directory",
   "read_file",
   "read_selected_text",
@@ -50,44 +44,20 @@ const INSPECTION_TOOLS = new Set([
   "search_notes",
   "get_calendar_events",
   "convert_document",
+  "office_document",
   "scrape_url",
-  "get_clipboard_text",
+  "get_clipboard_text"
 ]);
 
 const MAX_CALLS_PER_TOOL = 8;
 
 const CONTINUE_AFTER_TOOLS = new Set([
-  "edit_document",
+  "office_document",
   "write_file",
   "create_file",
   "convert_document",
   "edit_pdf"
 ]);
-
-const SEQUENTIAL_ACTION_TOOLS = new Set([
-  "open_application",
-  "open_url",
-  "type_text",
-  "press_keys",
-]);
-
-const MAX_COMPOUND_ACTION_FOLLOW_UPS = 3;
-
-export function isCompoundActionRequest(text: string): boolean {
-  const normalized = text.trim();
-  if (!normalized) return false;
-  if (/(?:然后|接着|随后|之后|并且|同时|再去|再来|再把)/.test(normalized)) return true;
-
-  const actionVerbs = normalized.match(/(?:打开|进入|访问|搜索|搜|输入|填写|点击|发送|播放|关闭)/g) || [];
-  return actionVerbs.length >= 2;
-}
-
-function latestUserMessage(messages: ChatMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") return messages[i].content || "";
-  }
-  return "";
-}
 
 function maxCallsForTool(name: string): number {
   return CONTINUE_AFTER_TOOLS.has(name) ? 20 : MAX_CALLS_PER_TOOL;
@@ -170,7 +140,6 @@ export class DeepSeekClient extends EventEmitter {
   private toolCallCounts = new Map<string, number>();
   private chatLoopCount = 0;
   private commandExecutionCounts = new Map<string, number>();
-  private compoundActionFollowUps = 0;
 
   constructor(existingMessages?: ChatMessage[]) {
     super();
@@ -201,7 +170,13 @@ export class DeepSeekClient extends EventEmitter {
     this.aborted = false;
     this.chatLoopCount = 0;
     this.commandExecutionCounts.clear();
-    this.compoundActionFollowUps = 0;
+    if (!this.apiKey) {
+      this.emit("error", "缺少 DeepSeek API Key");
+      return;
+    }
+
+    this.conversation.push({ role: "user", content: text });
+
     try {
       await this.streamChat(this.conversation);
     } catch (error) {
@@ -221,14 +196,14 @@ export class DeepSeekClient extends EventEmitter {
       this.emit("error", "任务执行步骤过多（已达100步），已自动中止以防死循环。");
       return;
     }
-    const allowedTools = availableTools.filter(
+    let allowedTools = availableTools.filter(
       t => (this.toolCallCounts.get(t.function.name) || 0) < maxCallsForTool(t.function.name)
     );
     if (allowedTools.length === 0) {
       log(`DeepSeekClient: all tools reached max calls, forcing final answer`);
     }
     this.abortController = new AbortController();
-    const response = await fetch(getChatCompletionsUrl(this.baseUrl), {
+    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -368,17 +343,7 @@ export class DeepSeekClient extends EventEmitter {
 
         const hasInspection = toolCalls.some(tc => INSPECTION_TOOLS.has(tc.function.name));
         const hasContinueAfter = toolCalls.some(tc => CONTINUE_AFTER_TOOLS.has(tc.function.name));
-        const needsCompoundActionFollowUp =
-          this.compoundActionFollowUps < MAX_COMPOUND_ACTION_FOLLOW_UPS &&
-          isCompoundActionRequest(latestUserMessage(this.conversation)) &&
-          toolCalls.some(tc => SEQUENTIAL_ACTION_TOOLS.has(tc.function.name));
-
-        if (needsCompoundActionFollowUp) {
-          this.compoundActionFollowUps++;
-          log(`DeepSeekClient: compound action remains eligible for follow-up (${this.compoundActionFollowUps}/${MAX_COMPOUND_ACTION_FOLLOW_UPS}). Continuing chat loop...`);
-        }
-
-        if (hasInspection || hasContinueAfter || needsCompoundActionFollowUp) {
+        if (hasInspection || hasContinueAfter) {
           log(`DeepSeekClient: Silent tools need follow-up (inspection/continue-after). Continuing chat loop to let LLM verify and continue...`);
           toolAckEmitted = false;
           await this.streamChat(this.conversation);
@@ -430,19 +395,18 @@ export class DeepSeekClient extends EventEmitter {
       reasoning_content: assistantReasoningContent || undefined
     });
 
-
     this.emit("done", parsed);
   }
 
   private async executeToolCalls(toolCalls: ToolCall[]): Promise<ToolResult[]> {
-    const { executeTool } = await import("../control/macos");
+    const { executeTool } = await import("../control/platform");
     const results: ToolResult[] = [];
 
     for (const tc of toolCalls) {
       let result: string;
       const signature = `${tc.function.name}:${tc.function.arguments.trim()}`;
       const currentCount = this.commandExecutionCounts.get(signature) || 0;
-      const isWhiteListed = ["capture_screen", "get_current_time"].includes(tc.function.name);
+      const isWhiteListed = tc.function.name === "get_current_time";
 
       if (!isWhiteListed && currentCount >= 7) {
         log(`[LOOP_PREVENT] Command repeated too many times (count=${currentCount}): ${signature}. Intercepting.`);

@@ -34,6 +34,7 @@ interface SettingsState {
   WHISPER_MODEL: string;
   GLOBAL_SHORTCUT_DISPLAY: string;
   AUTO_LAUNCH: boolean;
+  SHOW_DOCK_ICON: boolean;
 }
 
 interface ChatEntry {
@@ -41,6 +42,9 @@ interface ChatEntry {
   text: string;
   timestamp: number;
 }
+
+const isWindows = navigator.userAgent.includes("Windows");
+const DEFAULT_GLOBAL_SHORTCUT = isWindows ? "F8" : "RightOption";
 
 const DEFAULT_SETTINGS: SettingsState = {
   DEEPSEEK_API_KEY: "",
@@ -55,8 +59,9 @@ const DEFAULT_SETTINGS: SettingsState = {
   EDGE_TTS_RATE: 20,
   WAKE_WORD_ENABLED: true,
   WHISPER_MODEL: "ggml-base.bin",
-  GLOBAL_SHORTCUT_DISPLAY: "RightOption",
+  GLOBAL_SHORTCUT_DISPLAY: DEFAULT_GLOBAL_SHORTCUT,
   AUTO_LAUNCH: false,
+  SHOW_DOCK_ICON: true,
 };
 
 function rateToStr(n: number): string {
@@ -77,7 +82,7 @@ export default function App() {
     "not_downloaded" | "downloading" | "downloaded"
   >("not_downloaded");
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
-  const [isCapturingShortcut, setIsCapturingShortcut] = useState<boolean>(false);
+  const [shortcutCaptureTarget, setShortcutCaptureTarget] = useState<"wake" | null>(null);
   const [statusMessage, setStatusMessage] = useState<{
     text: string;
     type: "success" | "error" | "info" | "";
@@ -113,7 +118,9 @@ export default function App() {
     (async () => {
       try {
         if (!window.diriAPI) {
+          /*
           showTemporaryStatus("Preload 未加载，请联系开发者", "error");
+          */
           return;
         }
         const cfg = await window.diriAPI.getConfig();
@@ -130,8 +137,9 @@ export default function App() {
         if (cfg.EDGE_TTS_RATE !== undefined) merged.EDGE_TTS_RATE = rateFromStr(cfg.EDGE_TTS_RATE);
         if (cfg.WAKE_WORD_ENABLED !== undefined) merged.WAKE_WORD_ENABLED = cfg.WAKE_WORD_ENABLED === "true";
         if (cfg.WHISPER_MODEL !== undefined) merged.WHISPER_MODEL = cfg.WHISPER_MODEL;
-        if (cfg.GLOBAL_SHORTCUT !== undefined) merged.GLOBAL_SHORTCUT_DISPLAY = cfg.GLOBAL_SHORTCUT || "RightOption";
+        if (cfg.GLOBAL_SHORTCUT !== undefined) merged.GLOBAL_SHORTCUT_DISPLAY = cfg.GLOBAL_SHORTCUT || DEFAULT_GLOBAL_SHORTCUT;
         if (cfg.AUTO_LAUNCH !== undefined) merged.AUTO_LAUNCH = cfg.AUTO_LAUNCH === "true";
+        if (cfg.SHOW_DOCK_ICON !== undefined) merged.SHOW_DOCK_ICON = cfg.SHOW_DOCK_ICON !== "false";
         try {
           merged.AUTO_LAUNCH = await window.diriAPI.getAutoLaunch();
         } catch {}
@@ -139,7 +147,9 @@ export default function App() {
         setConfigLoaded(true);
         await refreshWhisperStatus();
       } catch (err: any) {
+        /*
         showTemporaryStatus("加载配置失败：" + (err?.message || err), "error");
+        */
       }
     })();
   }, []);
@@ -180,22 +190,75 @@ export default function App() {
 
   // ==================== 快捷键捕获 ====================
   useEffect(() => {
-    if (!isCapturingShortcut) return;
+    if (!shortcutCaptureTarget) return;
+    const target = shortcutCaptureTarget;
     const off = window.diriAPI.onShortcutCaptured((payload) => {
       if (payload.cancelled) {
-        setIsCapturingShortcut(false);
+        setShortcutCaptureTarget(null);
         showTemporaryStatus("已取消快捷键设置", "info");
         return;
       }
       if (payload.keyName) {
         handleInputChange("GLOBAL_SHORTCUT_DISPLAY", payload.keyName);
-        setIsCapturingShortcut(false);
-        showTemporaryStatus(`触发键已设置为：${payload.keyName}（保存后生效）`, "success");
+        setShortcutCaptureTarget(null);
+        showTemporaryStatus(`快捷键已设置为：${payload.keyName}（保存后生效）`, "success");
       }
     });
-    window.diriAPI.captureShortcut();
+    window.diriAPI.captureShortcut("single");
     return () => off();
-  }, [isCapturingShortcut]);
+  }, [shortcutCaptureTarget]);
+
+  // The native listener owns global shortcuts.  Capture inside this focused
+  // settings window as a fallback too, so a temporarily unavailable native
+  // listener (for example, while Windows is scanning its helper process) does
+  // not make the “设置快捷键” buttons appear broken.
+  useEffect(() => {
+    if (!shortcutCaptureTarget) return;
+
+    const pressed = new Set<string>();
+    const order: string[] = [];
+    const labelFor = (event: KeyboardEvent): string => {
+      const labels: Record<string, string> = {
+        AltLeft: "LeftAlt", AltRight: "RightAlt",
+        ControlLeft: "LeftControl", ControlRight: "RightControl",
+        ShiftLeft: "LeftShift", ShiftRight: "RightShift",
+        MetaLeft: "LeftWin", MetaRight: "RightWin",
+        Space: "Space", Enter: "Return", Escape: "Escape",
+        Tab: "Tab", Backspace: "Backspace", Delete: "Delete",
+      };
+      return labels[event.code] || event.key;
+    };
+    const apply = (keyName: string) => {
+      handleInputChange("GLOBAL_SHORTCUT_DISPLAY", keyName);
+      window.diriAPI.cancelShortcutCapture();
+      setShortcutCaptureTarget(null);
+      showTemporaryStatus(`快捷键已设置为：${keyName}（保存后生效）`, "success");
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = labelFor(event);
+      if (shortcutCaptureTarget === "wake") {
+        apply(key);
+        return;
+      }
+      if (!pressed.has(key)) {
+        pressed.add(key);
+        order.push(key);
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      pressed.delete(labelFor(event));
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+    };
+  }, [shortcutCaptureTarget]);
 
   // ==================== Whisper 下载进度 ====================
   useEffect(() => {
@@ -236,6 +299,7 @@ export default function App() {
       WHISPER_MODEL: settings.WHISPER_MODEL,
       GLOBAL_SHORTCUT: settings.GLOBAL_SHORTCUT_DISPLAY,
       AUTO_LAUNCH: String(settings.AUTO_LAUNCH),
+      SHOW_DOCK_ICON: String(settings.SHOW_DOCK_ICON),
     };
     try {
       const ok = await window.diriAPI.updateConfig(payload);
@@ -351,7 +415,7 @@ export default function App() {
         <div className="orb orb-3"></div>
       </div>
 
-      <div className="w-full h-screen relative z-10 grid grid-cols-[240px_1fr] gap-6 px-6 pb-6 pt-14">
+      <div className="w-[1000px] h-[660px] relative z-10 grid grid-cols-[240px_1fr] gap-6 p-6">
         {/* Sidebar */}
         <aside className="liquid-glass flex flex-col h-full rounded-[28px] overflow-hidden p-5">
           <div className="flex items-center gap-[18px] pb-5 mb-5 border-b border-white/50 relative">
@@ -364,9 +428,9 @@ export default function App() {
 
           <nav className="flex-1 flex flex-col gap-3.5 overflow-y-auto pr-1 pb-5 glass-scroll">
             {[
-              { id: "llm", label: "大语言模型", icon: Sparkles },
+              { id: "llm", label: "模型配置", icon: Sparkles },
               { id: "asr", label: "语音识别", icon: Mic },
-              { id: "search", label: "联网搜索", icon: Globe },
+              { id: "search", label: "搜索工具", icon: Globe },
               { id: "tts", label: "语音播报", icon: Volume2 },
               { id: "wake", label: "语音唤醒", icon: Zap },
               { id: "shortcut", label: "快捷键", icon: Keyboard },
@@ -386,10 +450,9 @@ export default function App() {
 
           <div className="pt-4 mt-4 border-t border-white/50 flex flex-col gap-2.5">
             {[
-              { label: "大模型连接", active: isLLMActive },
+              { label: "推理模型", active: isLLMActive },
               { label: "云端 ASR", active: isASRActive },
-              { label: "本地 Whisper", active: isWhisperActive },
-              { label: "网页 Firecrawl", active: isFirecrawlActive },
+              { label: "Firecrawl", active: isFirecrawlActive },
             ].map((st, i) => (
               <div key={i} className="flex items-center justify-between text-[11px] px-1">
                 <span className="text-slate-400 font-medium">{st.label}</span>
@@ -405,56 +468,41 @@ export default function App() {
         </aside>
 
         {/* Content */}
-        <div className="relative flex flex-col h-full overflow-hidden pb-2">
-          <main className="flex-1 overflow-y-auto pb-16 pr-2 glass-scroll">
-            <AnimatePresence mode="popLayout">
-              <motion.div
-                key={activeSection}
-                initial={{ opacity: 0, y: 8, scale: 0.995 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.995 }}
-                transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
-                className="flex flex-col gap-5"
-              >
+        <div className="relative flex flex-col h-full overflow-visible pb-2">
+          <main className="flex-1 min-h-0 overflow-y-auto pb-4 pr-2 glass-scroll">
+            <div key={activeSection} className="flex flex-col gap-5">
                 {/* LLM */}
                 {activeSection === "llm" && (
-                  <div>
-                    <div className="mb-5 px-1">
-                      <h2 className="font-display font-semibold text-2xl tracking-tight text-slate-800">大语言模型</h2>
-                      <p className="text-[12px] text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
-                        <span>配置对话大模型（DeepSeek 兼容 OpenAI 格式）</span>
-                        <span className="text-slate-300 select-none">•</span>
-                        <a
-                          href="https://platform.deepseek.com/api_keys"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-0.5 text-slate-400 hover:text-slate-600 transition-all active:scale-95 cursor-pointer font-medium hover:underline"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                          <span>获取</span>
-                        </a>
-                      </p>
-                    </div>
-                    <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-5">
-                      <div className="flex flex-col gap-2">
-                        <label className="text-[12px] font-semibold text-slate-500 ml-1">API Key</label>
-                        <input type="password" value={settings.DEEPSEEK_API_KEY}
-                          onChange={(e) => handleInputChange("DEEPSEEK_API_KEY", e.target.value)}
-                          placeholder="sk-..." className="glass-input" autoComplete="off" />
+                  <div className="flex flex-col gap-3.5">
+                    <div>
+                      <div className="mb-1.5 px-1 flex items-baseline justify-between">
+                        <h2 className="font-display font-semibold text-[13px] tracking-tight text-slate-800">推理模型</h2>
+                        <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                          <span>配置推理模型</span>
+                          <span className="text-slate-300 select-none">•</span>
+                          <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer"
+                            className="inline-flex items-center gap-0.5 text-slate-400 hover:text-slate-600 transition-all active:scale-95 cursor-pointer font-medium hover:underline">
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            <span>获取</span>
+                          </a>
+                        </p>
                       </div>
-                      <div className="flex flex-col gap-2">
-                        <label className="text-[12px] font-semibold text-slate-500 ml-1">Base URL</label>
-                        <input type="text" value={settings.DEEPSEEK_BASE_URL}
-                          onChange={(e) => handleInputChange("DEEPSEEK_BASE_URL", e.target.value)}
-                          placeholder="https://api.deepseek.com" className="glass-input" />
-                      </div>
-                      <div className="flex flex-col gap-2">
-                        <label className="text-[12px] font-semibold text-slate-500 ml-1">模型 (Model)</label>
-                        <input type="text" value={settings.DEEPSEEK_MODEL}
-                          onChange={(e) => handleInputChange("DEEPSEEK_MODEL", e.target.value)}
-                          placeholder="deepseek-v4-flash" className="glass-input" />
+                      <div className="liquid-glass py-2.5 px-4 rounded-[16px] flex flex-col gap-2.5">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[11px] font-semibold text-slate-500 ml-1">API Key</label>
+                          <input type="password" value={settings.DEEPSEEK_API_KEY}
+                            onChange={(e) => handleInputChange("DEEPSEEK_API_KEY", e.target.value)}
+                            placeholder="sk-..." className="glass-input !py-1.5 !px-3 text-[12px]" autoComplete="off" />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[11px] font-semibold text-slate-500 ml-1">模型 (Model)</label>
+                          <input type="text" value={settings.DEEPSEEK_MODEL}
+                            onChange={(e) => handleInputChange("DEEPSEEK_MODEL", e.target.value)}
+                            placeholder="deepseek-v4-flash" className="glass-input !py-1.5 !px-3 text-[12px]" />
+                        </div>
                       </div>
                     </div>
+
                   </div>
                 )}
 
@@ -462,7 +510,8 @@ export default function App() {
                 {activeSection === "asr" && (
                   <div className="flex flex-col gap-5">
                     <div>
-                      <div className="mb-5 px-1">
+                     <div className="mb-5 px-1">
+                       <p className="text-[12px] text-slate-400 mt-1">{isWindows ? "Windows：按住快捷键说话，松开后发送；推荐使用 F8 / F9。" : "全局唤醒设置：按住说话，松手发送。点击右侧按钮后按下任意按键设置"}</p>
                         <h2 className="font-display font-semibold text-2xl tracking-tight text-slate-800">语音识别</h2>
                         <p className="text-[12px] text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
                           <span>火山引擎 / 豆包 Seed ASR，用于将语音转成文字</span>
@@ -496,8 +545,8 @@ export default function App() {
                           <input type="text" value={settings.VOLCENGINE_RESOURCE_ID}
                             onChange={(e) => handleInputChange("VOLCENGINE_RESOURCE_ID", e.target.value)}
                             placeholder="volc.seedasr.sauc.duration" className="glass-input" />
-                        </div>
-                      </div>
+                     </div>
+                   </div>
                     </div>
                     <div className="liquid-glass p-5 rounded-[22px] flex items-center justify-between">
                       <div className="flex flex-col gap-1 pr-4">
@@ -548,7 +597,7 @@ export default function App() {
                   <div>
                     <div className="mb-5 px-1">
                       <h2 className="font-display font-semibold text-2xl tracking-tight text-slate-800">语音播报</h2>
-                      <p className="text-[12px] text-slate-400 mt-1">微软 Edge TTS 免费云端高自然度语音合成</p>
+                      <p className="text-[12px] text-slate-400 mt-1">Edge TTS 高自然语音合成</p>
                     </div>
                     <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-6">
                       <div className="flex flex-col gap-2">
@@ -682,20 +731,22 @@ export default function App() {
                   <div>
                     <div className="mb-5 px-1">
                       <h2 className="font-display font-semibold text-2xl tracking-tight text-slate-800">快捷键</h2>
-                      <p className="text-[12px] text-slate-400 mt-1">全局呼唤设置：按住说话、松手发送。点击右侧按钮后按下任意按键设置</p>
+                      <p className="text-[12px] text-slate-400 mt-1">Windows：按住快捷键说话，松开后发送；默认 F8。</p>
                     </div>
-                    <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-5">
-                      <div className="flex flex-col gap-2">
-                        <label className="text-[12px] font-semibold text-slate-500 ml-1">唤醒触发键</label>
-                        <div className="flex gap-4 items-center">
-                          <div className={`flex-1 font-mono font-semibold px-4 py-3.5 rounded-2xl border text-center transition-all ${
-                            isCapturingShortcut ? "bg-sky-50 text-sky-500 border-sky-300 animate-pulse" : "glass-input"}`}>
-                            {isCapturingShortcut ? "请在键盘上按下目标键..." : settings.GLOBAL_SHORTCUT_DISPLAY}
+                    <div className="flex flex-col gap-5">
+                      <div className="liquid-glass p-6 rounded-[24px] flex flex-col gap-5">
+                        <div className="flex flex-col gap-2">
+                          <label className="text-[12px] font-semibold text-slate-500 ml-1">唤醒触发键</label>
+                          <div className="flex gap-4 items-center">
+                            <div className={`flex-1 font-mono font-semibold px-4 py-3.5 rounded-2xl border text-center transition-all ${
+                              shortcutCaptureTarget === "wake" ? "bg-sky-50 text-sky-500 border-sky-300 animate-pulse" : "glass-input"}`}>
+                              {shortcutCaptureTarget === "wake" ? "请按下快捷键，保存后生效" : settings.GLOBAL_SHORTCUT_DISPLAY}
+                            </div>
+                            <button onClick={() => setShortcutCaptureTarget("wake")} disabled={shortcutCaptureTarget !== null}
+                              className="btn-glass-blue px-6 py-3.5 rounded-2xl cursor-pointer font-medium text-[13px]">
+                              <span>{shortcutCaptureTarget === "wake" ? "监听中..." : "设置快捷键"}</span>
+                            </button>
                           </div>
-                          <button onClick={() => setIsCapturingShortcut(true)} disabled={isCapturingShortcut}
-                            className="btn-glass-blue px-6 py-3.5 rounded-2xl cursor-pointer font-medium text-[13px]">
-                            <span>{isCapturingShortcut ? "监听中..." : "设置快捷键"}</span>
-                          </button>
                         </div>
                       </div>
                     </div>
@@ -710,6 +761,17 @@ export default function App() {
                       <p className="text-[12px] text-slate-400 mt-1">开机自启、版本与更新检查</p>
                     </div>
                     <div className="liquid-glass p-5 rounded-[22px] flex items-center justify-between">
+                      <div className="flex flex-col gap-1 pr-4">
+                        <h4 className="text-sm font-semibold text-slate-800">在 Dock 中显示 Daisy</h4>
+                        <p className="text-[11px] text-slate-400">关闭后 Daisy 仍在后台运行，可从菜单栏图标打开设置或重新显示 Dock</p>
+                      </div>
+                      <label className="glass-switch-container">
+                        <input type="checkbox" checked={settings.SHOW_DOCK_ICON}
+                          onChange={(e) => handleInputChange("SHOW_DOCK_ICON", e.target.checked)} />
+                        <div className="glass-switch-track"><div className="glass-switch-thumb"></div></div>
+                      </label>
+                    </div>
+                    <div className="liquid-glass p-5 rounded-[22px] flex items-center justify-between mt-5">
                       <div className="flex flex-col gap-1 pr-4">
                         <h4 className="text-sm font-semibold text-slate-800">开机自启</h4>
                         <p className="text-[11px] text-slate-400">在您的计算机启动或登录系统时，自动激活并后台运行 Daisy</p>
@@ -775,8 +837,7 @@ export default function App() {
                     </div>
                   </div>
                 )}
-              </motion.div>
-            </AnimatePresence>
+            </div>
           </main>
 
           {/* Footer */}
@@ -789,21 +850,21 @@ export default function App() {
                     className={`text-[12px] font-medium flex items-center gap-1.5 truncate ${
                       statusMessage.type === "success" ? "text-emerald-500"
                       : statusMessage.type === "error" ? "text-rose-500" : "text-sky-500"}`}>
-                    <span className="w-2 h-2 rounded-full bg-current animate-ping" />
+                    <span className="w-2 h-2 rounded-full bg-current" />
                     <span>{statusMessage.text}</span>
                   </motion.div>
                 )}
               </AnimatePresence>
               {!statusMessage.text && (
                 <span className="text-[11px] text-slate-400 font-medium">
-                  {configLoaded ? "配置项与 Daisy 后台服务保持动态同步中" : "正在加载 daisy.env 配置…"}
+                  配置项与后台服务动态同步
                 </span>
               )}
             </div>
             <div className="flex items-center gap-3 shrink-0">
               <button onClick={handleOpenHistory}
                 className="px-5 py-3 rounded-full btn-glass-green cursor-pointer text-[13px] flex items-center gap-1.5">
-                <History className="w-4 h-4 text-emerald-600 animate-pulse" />
+                <History className="w-4 h-4 text-emerald-600" />
                 <span>对话历史</span>
               </button>
               <button onClick={handleSaveSettings} disabled={!configLoaded}
@@ -838,7 +899,7 @@ export default function App() {
                   </div>
                   <div>
                     <h3 className="font-semibold text-sm text-slate-800">Daisy · 对话历史</h3>
-                    <p className="text-[10px] text-slate-400 font-medium">最近 10 次交互记录</p>
+                    <p className="text-[10px] text-slate-400 font-medium">最近 20 次交互记录</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">

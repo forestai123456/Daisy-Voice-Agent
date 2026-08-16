@@ -26,6 +26,23 @@ export const availableTools: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "diagnose_application",
+      description: "只读诊断指定应用为何无法打开：检查已安装启动项、文件是否存在、是否仍有进程运行，以及 Windows 最近 7 天的相关崩溃或挂起记录。绝不会启动、关闭或修改该应用。",
+      parameters: {
+        type: "object",
+        properties: {
+          name: {
+            type: "string",
+            description: "要诊断的应用名称，例如 微信、Chrome、Word。",
+          },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "web_search",
       description: "使用 DuckDuckGo 搜索引擎联网查询最新信息",
       parameters: {
@@ -37,6 +54,23 @@ export const availableTools: ToolDefinition[] = [
           },
         },
         required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "scrape_url",
+      description: "使用 Firecrawl 爬虫工具直接爬取指定网页的完整内容（转换为 Markdown 格式返回，适用于需要读取特定链接网页内容、新闻或推特主页推文等场景）",
+      parameters: {
+        type: "object",
+        properties: {
+          url: {
+            type: "string",
+            description: "要爬取的完整网址（例如 https://x.com/username 或 https://example.com/article）",
+          },
+        },
+        required: ["url"],
       },
     },
   },
@@ -61,13 +95,13 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "open_application",
-      description: "打开指定的 macOS 本地应用程序。仅在最终目标是打开应用本身时使用；访问网站或网站内搜索应直接调用 open_url 打开最终 URL，不要先打开浏览器。",
+      description: "打开指定的应用程序",
       parameters: {
         type: "object",
         properties: {
           name: {
             type: "string",
-            description: '应用名称，例如 "Safari", "WeChat"。如果是打开默认浏览器或用户只说"打开浏览器"，请务必传入 "browser"。',
+            description: '应用名称，例如 "WeChat", "Chrome", "Notepad", "Word"。如果是打开默认浏览器或用户只说"打开浏览器"，请务必传入 "browser"。',
           },
         },
         required: ["name"],
@@ -78,7 +112,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "quit_application",
-      description: "关闭指定的 macOS 应用程序",
+      description: "关闭指定的应用程序",
       parameters: {
         type: "object",
         properties: {
@@ -115,7 +149,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "open_url",
-      description: "用系统默认浏览器打开指定网址/网页。调用前应先构造能直接到达用户最终目标的完整 URL；网站内搜索应尽量包含搜索路径和关键词参数，而不是只打开网站首页。",
+      description: "用系统默认浏览器打开指定网址/网页",
       parameters: {
         type: "object",
         properties: {
@@ -183,6 +217,115 @@ export const availableTools: ToolDefinition[] = [
         type: "object",
         properties: {},
         required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_clipboard_text",
+      description: "直接读取用户当前剪贴板（Clipboard）中的文本内容（适用于用户说“读取我刚刚复制的内容”、“读取我复制的链接”等场景）",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_clipboard_text",
+      description: "将指定的文本直接写入用户的系统剪贴板中，以便用户可以直接使用 Command + V 粘贴（适用于用户说“复制以下内容”、“帮我把回复的内容复制到剪贴板”等场景）",
+      parameters: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description: "要写入剪贴板的纯文本内容",
+          },
+        },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_email",
+      description: "调用本地 Mail 应用发送电子邮件（适用于发件、发信、给某人发邮箱等场景）。macOS 限定，Windows 暂不支持。",
+      parameters: {
+        type: "object",
+        properties: {
+          to: {
+            type: "string",
+            description: "收件人的电子邮箱地址（例如 test@example.com）",
+          },
+          subject: {
+            type: "string",
+            description: "邮件的主题/标题",
+          },
+          body: {
+            type: "string",
+            description: "邮件的正文内容",
+          },
+        },
+        required: ["to", "subject", "body"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_unread_emails",
+      description: "调用本地 Mail 应用读取收件箱中的最新未读邮件（适用于用户说“读一下我最新的邮件”、“有没有未读邮件”等场景）。macOS 限定，Windows 暂不支持。",
+      parameters: {
+        type: "object",
+        properties: {
+          limit: {
+            type: "integer",
+            description: "最多获取邮件的数量，默认和推荐为 5",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_recent_emails",
+      description: "调用本地 Mail 应用读取收件箱中的最新邮件列表（包括已读和未读，最合适用户需要看最近邮件、今天/昨天有哪些邮件等场景，最新邮件排在最前面）。macOS 限定，Windows 暂不支持。",
+      parameters: {
+        type: "object",
+        properties: {
+          limit: {
+            type: "integer",
+            description: "要获取的最新邮件数量，默认和推荐为 5",
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_emails",
+      description: "在本地 macOS Mail 中搜索收件箱中包含特定关键字的邮件（包括发件人、发件地址、主题或正文关键字，最新匹配邮件排在最前面）",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "搜索关键字（可以是发件人、主题关键词、正文关键词或日期等）",
+          },
+          limit: {
+            type: "integer",
+            description: "最多获取匹配邮件的数量，默认和推荐为 5",
+          },
+        },
+        required: ["query"],
       },
     },
   },
@@ -333,7 +476,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "create_note",
-      description: "在 macOS 备忘录(Notes)应用中创建一条新备忘录",
+      description: "在备忘录(Notes)应用中创建一条新备忘录。macOS Notes.app 限定，Windows 暂不支持。",
       parameters: {
         type: "object",
         properties: {
@@ -354,7 +497,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "create_reminder",
-      description: "在 macOS 提醒事项(Reminders)应用中创建一条新提醒，可设置提醒时间",
+      description: "在提醒事项(Reminders)应用中创建一条新提醒，可设置提醒时间。macOS Reminders.app 限定，Windows 暂不支持。",
       parameters: {
         type: "object",
         properties: {
@@ -379,7 +522,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "create_calendar_event",
-      description: "在 macOS 日历(Calendar)应用中创建一个新事件",
+      description: "在日历(Calendar)应用中创建一个新事件。macOS Calendar.app 限定，Windows 暂不支持。",
       parameters: {
         type: "object",
         properties: {
@@ -412,7 +555,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "get_calendar_events",
-      description: "获取 macOS 日历中接下来指定天数内的事件",
+      description: "获取日历中接下来指定天数内的事件。macOS Calendar.app 限定，Windows 暂不支持。",
       parameters: {
         type: "object",
         properties: {
@@ -429,7 +572,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "search_notes",
-      description: "在 macOS 备忘录中搜索包含指定关键词的笔记",
+      description: "在备忘录中搜索包含指定关键词的笔记。macOS Notes.app 限定，Windows 暂不支持。",
       parameters: {
         type: "object",
         properties: {
@@ -484,7 +627,7 @@ export const availableTools: ToolDefinition[] = [
     type: "function",
     function: {
       name: "search_maps",
-      description: "在 macOS 地图(Maps)应用中搜索地点",
+      description: "在地图(Maps)应用中搜索地点。macOS 限定；Windows 会改为在浏览器中打开 Bing 地图。",
       parameters: {
         type: "object",
         properties: {
@@ -543,134 +686,8 @@ export const availableTools: ToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "scrape_url",
-      description: "提取在线网页的纯净文本内容（剔除导航栏、侧边栏、广告等无关内容，只保留主体文字，常用于获取网页、文章或文档的具体正文进行理解与分析）",
-      parameters: {
-        type: "object",
-        properties: {
-          url: {
-            type: "string",
-            description: "要提取正文内容的网页 URL",
-          },
-        },
-        required: ["url"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_clipboard_text",
-      description: "获取用户当前 macOS 系统剪切板（Clipboard）中的纯文本内容",
-      parameters: {
-        type: "object",
-        properties: {},
-        required: [],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "write_clipboard_text",
-      description: "将指定文本写入用户当前 macOS 系统剪切板（Clipboard）中，直接覆盖旧内容",
-      parameters: {
-        type: "object",
-        properties: {
-          text: {
-            type: "string",
-            description: "要写入剪贴板的纯文本内容",
-          },
-        },
-        required: ["text"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "send_email",
-      description: "调用本地 macOS Mail 应用程序快速发送一封邮件（静默发送，无需用户干预确认）",
-      parameters: {
-        type: "object",
-        properties: {
-          to: {
-            type: "string",
-            description: "收件人邮箱地址，例如 'example@domain.com'",
-          },
-          subject: {
-            type: "string",
-            description: "邮件主题（不写默认为'无主题'）",
-          },
-          body: {
-            type: "string",
-            description: "邮件正文内容，支持换行",
-          },
-        },
-        required: ["to"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "read_unread_emails",
-      description: "调用本地 macOS Mail 应用读取收件箱中的未读邮件列表（最新邮件排在最前面）",
-      parameters: {
-        type: "object",
-        properties: {
-          limit: {
-            type: "integer",
-            description: "要获取的未读邮件数量，默认和推荐为 5",
-          },
-        },
-        required: [],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_recent_emails",
-      description: "调用本地 macOS Mail 应用读取收件箱中的最新邮件列表（包括已读和未读，最合适用户需要看最近邮件、今天/昨天有哪些邮件等场景，最新邮件排在最前面）",
-      parameters: {
-        type: "object",
-        properties: {
-          limit: {
-            type: "integer",
-            description: "要获取的最新邮件数量，默认和推荐为 5",
-          },
-        },
-        required: [],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "search_emails",
-      description: "在本地 macOS Mail 中搜索收件箱中包含特定关键字的邮件（包括发件人、发件地址、主题或正文关键字，最新匹配邮件排在最前面）",
-      parameters: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description: "搜索关键字（可以是发件人、主题关键词、正文关键词或日期等）",
-          },
-          limit: {
-            type: "integer",
-            description: "最多获取匹配邮件的数量，默认和推荐为 5",
-          },
-        },
-        required: ["query"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "switch_audio_output",
-      description: "切换 macOS 音频输出设备（如耳机、外放、扬声器等）。会直接调用系统命令 SwitchAudioSource 进行切换，无需额外确认。",
+      description: "切换音频输出设备（如耳机、外放、扬声器等）。macOS 限定（调用 SwitchAudioSource），Windows 暂不支持。",
       parameters: {
         type: "object",
         properties: {
@@ -761,42 +778,34 @@ export const availableTools: ToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "edit_document",
-      description: "编辑 Word 文档（.docx）。删除指定颜色文字时自动保留下划线、粗体等格式（替换为等长空格）。页码通过解析文档内部的节分页符（section break）来定位，精确可靠。",
+      name: "office_document",
+      description: "使用 OfficeCLI 创建、编辑或转换 Word、Excel、PowerPoint 文档。首次调用会自动下载安装并校验 OfficeCLI，之后会在后台安全更新。创建时 operation=create 且提供 target；编辑前先 inspect 或 query 读取结构；edit 必须传入 JSON 操作数组，工具会复制到 target、原子编辑并自动校验。PDF 原地编辑请使用 edit_pdf。",
       parameters: {
         type: "object",
         properties: {
           source: {
             type: "string",
-            description: "源 .docx 文件路径",
+            description: "除 create 外必填的源文件路径。支持 .docx、.xlsx、.pptx",
           },
           target: {
             type: "string",
-            description: "输出 .docx 文件路径（不覆盖源文件）",
+            description: "create、edit 或 convert 的输出路径；edit 会先复制 source 到 target，保留源文件不变",
           },
           operation: {
             type: "string",
-            enum: ["remove_colored_text", "run_code"],
-            description: "操作类型。remove_colored_text: 删除指定颜色文字; run_code: 执行自定义 Python 代码（doc 对象可用）",
+            enum: ["create", "inspect", "query", "edit", "validate", "convert"],
+            description: "create=从零创建 .docx/.xlsx/.pptx；inspect=读取带格式的结构；query=按选择器查找；edit=对 target 执行原子批量编辑；validate=校验 OpenXML 文档；convert=优先用 OfficeCLI 导出 HTML/PNG/SVG/PDF，其他格式自动使用 Daisy 兼容转换兜底",
           },
-          color: {
+          query: {
             type: "string",
-            description: "要删除的文字颜色（十六进制 RGB），如 FF0000（红）。remove_colored_text 需要",
+            description: "query 操作的 OfficeCLI 选择器，例如 paragraph[style=Heading1] 或 run:contains(TODO)",
           },
-          page_start: {
-            type: "integer",
-            description: "起始页码（从1开始），可选，不填则处理全文",
-          },
-          page_end: {
-            type: "integer",
-            description: "结束页码（含），需和 page_start 一起用",
-          },
-          code: {
+          commands: {
             type: "string",
-            description: "自定义 Python 代码（仅 run_code 需要）。doc/W_NS/RGBColor 可用，不要 import 和 doc.save()",
+            description: "仅 edit 使用：OfficeCLI batch JSON 数组。每项仅允许 set、add、remove、move、swap；先 inspect/query 确认元素路径，再生成操作。示例：[{\"command\":\"set\",\"path\":\"/body/p[1]\",\"props\":{\"text\":\"新标题\"}}]",
           },
         },
-        required: ["source", "target", "operation"],
+        required: ["operation"],
       },
     },
   },

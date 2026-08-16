@@ -13,8 +13,16 @@ let micInitPromise = null;
 let resumeInterval = null;
 let desiredRecording = false;
 let operationGeneration = 0;
+let recordingGeneration = 0;
 let wakeWordEnabled = false;
+let liveModeEnabled = false;
 let shuttingDown = false;
+let sustainedExternalAudioActive = false;
+const playbackSpeechGate =
+  typeof DaisyLivePlaybackSpeechGate !== "undefined"
+    ? new DaisyLivePlaybackSpeechGate.LivePlaybackSpeechGate()
+    : null;
+let playbackSpeechGateActivity = false;
 
 function logToMain(msg) {
   diriAPI.sendRendererLog("AUDIO_LOG: " + msg);
@@ -148,7 +156,7 @@ async function ensureMic() {
       // callback dereference a different generation's global AudioContext.
       const inputSampleRate = newContext.sampleRate;
       newProcessor.onaudioprocess = (event) => {
-        if (!isRecording && !wakeWordEnabled) return;
+        if (!isRecording && !wakeWordEnabled && !liveModeEnabled) return;
         const inputData = event.inputBuffer.getChannelData(0);
 
         audioLogCounter++;
@@ -162,8 +170,30 @@ async function ensureMic() {
         }
 
         const downsampled = downsampleBuffer(inputData, inputSampleRate);
-        const pcm = floatTo16BitPCM(downsampled);
-        diriAPI.sendAudioData(uint8ToBase64(pcm));
+        const gated = playbackSpeechGate
+          ? playbackSpeechGate.process(downsampled)
+          : { frames: [downsampled], activityChanged: null };
+        if (gated.activityChanged !== null) {
+          playbackSpeechGateActivity = Boolean(gated.activityChanged);
+          diriAPI.sendLiveUserActivity(playbackSpeechGateActivity);
+          logToMain(
+            "external playback speech gate " +
+              (playbackSpeechGateActivity ? "opened" : "closed") +
+              " rms=" +
+              Number(gated.rms || 0).toFixed(4) +
+              " peak=" +
+              Number(gated.peak || 0).toFixed(4) +
+              " threshold=" +
+              Number(gated.threshold || 0).toFixed(4),
+          );
+        }
+        for (const frame of gated.frames) {
+          const pcm = floatTo16BitPCM(frame);
+          diriAPI.sendAudioData(
+            uint8ToBase64(pcm),
+            desiredRecording ? recordingGeneration : 0,
+          );
+        }
       };
 
       newSource.connect(newProcessor);
@@ -191,7 +221,7 @@ async function ensureMic() {
         }
       }, 5000);
 
-      if (shuttingDown || (!desiredRecording && !wakeWordEnabled)) {
+      if (shuttingDown || (!desiredRecording && !wakeWordEnabled && !liveModeEnabled)) {
         releaseMic(shuttingDown ? "window shutting down" : "pending start was cancelled");
         return false;
       }
@@ -233,7 +263,7 @@ async function setWakeWordEnabled(enabled) {
   logToMain("setWakeWordEnabled: enabled=" + enabled + " isRecording=" + isRecording);
 
   if (!enabled) {
-    if (!desiredRecording && !isRecording) {
+    if (!desiredRecording && !isRecording && !liveModeEnabled) {
       releaseMic("wake-word monitoring disabled");
     }
     return;
@@ -249,7 +279,75 @@ async function setWakeWordEnabled(enabled) {
   }
 }
 
-async function startRecording() {
+async function setLiveModeEnabled(enabled) {
+  liveModeEnabled = enabled;
+  logToMain("setLiveModeEnabled: enabled=" + enabled);
+  if (!enabled) {
+    sustainedExternalAudioActive = false;
+    if (!desiredRecording && !isRecording && !wakeWordEnabled) {
+      releaseMic("Live mode disabled");
+    }
+    return;
+  }
+
+  if (!shuttingDown) {
+    try {
+      await ensureMic();
+    } catch (error) {
+      logToMain("setLiveModeEnabled: Live mic start failed: " + error.message);
+      diriAPI.sendAudioError("无法访问麦克风：" + error.message);
+    }
+  }
+}
+
+async function setSustainedExternalAudioActive(active) {
+  sustainedExternalAudioActive = Boolean(active);
+  const gateState =
+    playbackSpeechGate?.setExternalPlaybackActive(
+      sustainedExternalAudioActive,
+    );
+  if (
+    playbackSpeechGateActivity ||
+    gateState?.activityChanged === false
+  ) {
+    playbackSpeechGateActivity = false;
+    diriAPI.sendLiveUserActivity(false);
+  }
+  logToMain(
+    "setSustainedExternalAudioActive: active=" +
+      sustainedExternalAudioActive,
+  );
+
+  const track = mediaStream?.getAudioTracks?.()[0];
+  if (!track || typeof track.applyConstraints !== "function") return;
+  try {
+    await track.applyConstraints({
+      echoCancellation: true,
+      noiseSuppression: true,
+      // Keep native speech enhancement fully enabled during playback. Turning
+      // AGC off here made the real user's voice quieter exactly when the local
+      // speech gate needed to distinguish it from speaker leakage.
+      autoGainControl: true,
+    });
+  } catch (error) {
+    logToMain(
+      "setSustainedExternalAudioActive: constraints unchanged: " +
+        error.message,
+    );
+  }
+}
+
+async function startRecording(requestedGeneration = 0) {
+  const mainGeneration = Number(requestedGeneration) || 0;
+  if (
+    mainGeneration > 0 &&
+    recordingGeneration > 0 &&
+    mainGeneration < recordingGeneration
+  ) {
+    logToMain("ignoring stale start generation=" + mainGeneration);
+    return;
+  }
+  recordingGeneration = mainGeneration;
   const myGeneration = ++operationGeneration;
   desiredRecording = true;
   logToMain("startRecording: generation=" + myGeneration + " isRecording=" + isRecording + " micReady=" + micReady);
@@ -263,42 +361,66 @@ async function startRecording() {
 
     isRecording = true;
     logToMain("startRecording: ready generation=" + myGeneration);
-    diriAPI.sendAudioReady();
+    diriAPI.sendAudioReady(mainGeneration);
   } catch (error) {
     if (myGeneration !== operationGeneration || !desiredRecording || shuttingDown) return;
     desiredRecording = false;
     isRecording = false;
     releaseMic("recording start failed");
     logToMain("startRecording FAILED: " + error.message);
-    diriAPI.sendAudioError("无法访问麦克风：" + error.message);
+    diriAPI.sendAudioError("无法访问麦克风：" + error.message, mainGeneration);
   }
 }
 
-function stopRecording() {
+function stopRecording(requestedGeneration = 0) {
+  const mainGeneration = Number(requestedGeneration) || 0;
+  if (
+    mainGeneration > 0 &&
+    recordingGeneration > 0 &&
+    mainGeneration !== recordingGeneration
+  ) {
+    logToMain(
+      "ignoring stale stop generation=" +
+        mainGeneration +
+        " active=" +
+        recordingGeneration,
+    );
+    return;
+  }
   const myGeneration = ++operationGeneration;
   logToMain("stopRecording: generation=" + myGeneration + " isRecording=" + isRecording + " micReady=" + micReady);
   desiredRecording = false;
   isRecording = false;
 
-  if (!wakeWordEnabled) {
+  if (!wakeWordEnabled && !liveModeEnabled) {
     releaseMic("recording stopped");
   }
 
   // Always acknowledge STOP, including cancellation during getUserMedia.
   // The in-flight initializer checks desiredRecording before publishing READY.
-  diriAPI.sendAudioStopped();
+  const acknowledgedGeneration = mainGeneration || recordingGeneration;
+  recordingGeneration = 0;
+  diriAPI.sendAudioStopped(acknowledgedGeneration);
 }
 
-diriAPI.onStartRecording(() => {
-  startRecording();
+diriAPI.onStartRecording((generation) => {
+  startRecording(generation);
 });
 
-diriAPI.onStopRecording(() => {
-  stopRecording();
+diriAPI.onStopRecording((generation) => {
+  stopRecording(generation);
 });
 
 diriAPI.onWakeWordEnabled((enabled) => {
   setWakeWordEnabled(Boolean(enabled));
+});
+
+diriAPI.onLiveCaptureEnabled((enabled) => {
+  setLiveModeEnabled(Boolean(enabled));
+});
+
+diriAPI.onLiveExternalPlayback((active) => {
+  setSustainedExternalAudioActive(Boolean(active));
 });
 
 window.onerror = (message, source, lineno, colno, error) => {
@@ -313,5 +435,9 @@ window.addEventListener("beforeunload", () => {
   shuttingDown = true;
   operationGeneration++;
   desiredRecording = false;
+  if (playbackSpeechGateActivity) {
+    playbackSpeechGateActivity = false;
+    diriAPI.sendLiveUserActivity(false);
+  }
   releaseMic("window unloading");
 });
