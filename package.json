@@ -1,7 +1,7 @@
 {
   "name": "Daisy",
   "version": "1.6.0",
-  "description": "Daisy - AI voice assistant for Windows",
+  "description": "Daisy: AI voice assistant for macOS & Windows",
   "author": "Daisy",
   "main": "dist/main/index.js",
   "scripts": {
@@ -14,9 +14,12 @@
     "start": "electron .",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac:arm64": "npm run build && electron-builder --mac --arm64",
     "dist:win": "npm run dist:win:x64",
     "dist:win:x64": "npm run build && electron-builder --win --x64",
     "dist:win:arm64": "npm run build && electron-builder --win --arm64",
+    "clean": "node scripts/clean.cjs",
     "postinstall": "patch-package"
   },
   "devDependencies": {
@@ -32,10 +35,12 @@
     "vite": "^8.1.0"
   },
   "dependencies": {
+    "@picovoice/porcupine-node": "^4.0.2",
     "@tailwindcss/vite": "^4.3.2",
     "dotenv": "^16.5.0",
     "duck-duck-scrape": "^2.2.7",
     "electron-updater": "^6.8.9",
+    "ffmpeg-static": "^5.3.0",
     "framer-motion": "^12.42.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.42.2",
@@ -44,6 +49,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tailwindcss": "^4.3.2",
+    "uiohook-napi": "^1.5.5",
     "ws": "^8.21.0"
   },
   "build": {
@@ -70,7 +76,9 @@
     "asarUnpack": [
       "assets/bin/**",
       "assets/lib/**",
-      "assets/models/**"
+      "assets/models/**",
+      "node_modules/uiohook-napi/**",
+      "node_modules/ffmpeg-static/**"
     ],
     "extraResources": [
       {
@@ -82,6 +90,20 @@
         "to": "icon.icns"
       }
     ],
+    "dmg": {
+      "contents": [
+        {
+          "x": 140,
+          "y": 200
+        },
+        {
+          "x": 400,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
     "mac": {
       "icon": "assets/icon.icns",
       "category": "public.app-category.utilities",

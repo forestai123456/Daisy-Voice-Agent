@@ -5,7 +5,7 @@
 <h1 align="center">Daisy</h1>
 
 <p align="center">
-  <strong>为 macOS 而生的语音优先 AI 助手</strong>
+  <strong>支持 macOS 与 Windows 的语音优先 AI 桌面助手</strong>
 </p>
 
 <p align="center">
@@ -17,6 +17,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-111827?logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/Windows-x64-0078D6?logo=windows&logoColor=white" alt="Windows x64" />
   <img src="https://img.shields.io/badge/voice-first-1683ff" alt="Voice first" />
   <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT License" />
 </p>
@@ -25,7 +26,7 @@
 
 ## Daisy 是什么？
 
-Daisy 是运行在 macOS 菜单栏之外的轻量语音助手：一个始终可调用的悬浮球，负责把一句自然语言变成实际操作或简洁回答。它不依赖固定命令词；你可以像和助手说话一样让它搜索资料、控制电脑、处理日程，或直接完成日常桌面任务。
+Daisy 是运行在桌面端的轻量语音助手：一个始终可调用的悬浮球，负责把一句自然语言变成实际操作或简洁回答。它不依赖固定命令词；你可以像和助手说话一样让它搜索资料、控制电脑、处理日程，或直接完成日常桌面任务。
 
 所有模型与语音服务均由你自行配置。你的 API Key、Token 与个人设置只保存在本机，不会随仓库或安装包分发。
 
@@ -33,7 +34,7 @@ Daisy 是运行在 macOS 菜单栏之外的轻量语音助手：一个始终可�
 
 | 场景 | Daisy 能做的事 |
 | --- | --- |
-| **自然语音对话** | 按住右侧 `Option` 键说话，松开自动发送；AI 流式生成回答，并由中文 TTS 自然播报。 |
+| **自然语音对话** | 按住快捷键说话（macOS 默认为右侧 `Option`，Windows 默认为 `F8`），松开自动发送；AI 流式生成回答，并由中文 TTS 自然播报。 |
 | **应用与窗口控制** | 打开、关闭或隐藏应用；发送快捷键；输入文本；调节音量；控制媒体播放；锁屏或息屏。 |
 | **站内搜索直达** | 直接打开常用站点的结果页，例如“打开 B 站搜索世界杯”“在夸克搜索 AI 新闻”“打开小宇宙搜索科技播客”。 |
 | **效率工具** | 创建与搜索备忘录、提醒事项和日历事件；查询天气、地图、时间、赛事；读写剪贴板。 |
@@ -57,7 +58,9 @@ Daisy 是运行在 macOS 菜单栏之外的轻量语音助手：一个始终可�
 
 ### 一按即说
 
-默认按住右侧 `Option` 键开始说话，松开后 Daisy 自动结束录音、提交识别结果并开始处理。也可在设置中开启“嘿 Daisy”唤醒词。
+- **macOS**：默认按住右侧 `Option` 键开始说话；
+- **Windows**：默认按住 `F8` 键开始说话；
+松开后 Daisy 自动结束录音、提交识别结果并开始处理。也可在设置中开启“嘿 Daisy”唤醒词。
 
 ### 快速反馈，而不是黑箱等待
 
@@ -65,15 +68,17 @@ Daisy 是运行在 macOS 菜单栏之外的轻量语音助手：一个始终可�
 
 ### 让网页搜索回到正确的网站
 
-“打开抖音搜索世界杯”不会退化为普通浏览器搜索；Daisy 会直接进入目标服务的站内搜索。对没有独立 macOS 应用的网站，例如视频号、红果短剧或夸克，Daisy 会直接打开其网页入口。
+“打开抖音搜索世界杯”不会退化为普通浏览器搜索；Daisy 会直接进入目标服务的站内搜索。对没有独立桌面应用的网站，例如视频号、红果短剧或夸克，Daisy 会直接打开其网页入口。
 
 ## 快速开始
 
 ### 1. 安装
 
-在 [Releases](https://github.com/forestai123456/Daisy-Voice-Agent/releases) 下载最新的 `Daisy-*.dmg`，打开后将 **Daisy** 拖入“应用程序”文件夹。
+前往 [Releases 页面](https://github.com/forestai123456/Daisy-Voice-Agent/releases) 下载适合你系统的安装包：
 
-当前发布包使用 ad-hoc 签名，未进行 Apple 公证。首次运行若被 macOS 拦截：在“应用程序”中按住 `Control` 点击 Daisy，选择“打开”，再在确认框中点击“打开”；必要时可前往“系统设置 → 隐私与安全性”选择“仍要打开”。请只从本仓库的 Release 页面获取安装包。
+- **macOS (Apple Silicon)**: 下载 `Daisy-*-arm64.dmg`，打开后将 **Daisy** 拖入“应用程序”文件夹。
+  > 首次运行若被 macOS 拦截：在“应用程序”中按住 `Control` 点击 Daisy，选择“打开”，再在确认框中点击“打开”；必要时可前往“系统设置 → 隐私与安全性”选择“仍要打开”。
+- **Windows (x64)**: 下载 `Daisy-Windows-x64-*-Setup.exe` 双击安装运行。
 
 ### 2. 配置服务
 
@@ -84,17 +89,14 @@ Daisy 是运行在 macOS 菜单栏之外的轻量语音助手：一个始终可�
 3. **语音播报**：默认使用 Microsoft Edge TTS，可在设置中调整；
 4. **可选唤醒词**：使用“嘿 Daisy”时，按提示配置本地 `whisper.cpp` 模型文件。
 
-### 3. 授权 macOS 权限
+### 3. 授权系统权限
 
-按系统提示授予 Daisy 必要权限：
-
-- 麦克风：采集语音；
-- 辅助功能与输入监控：控制应用、发送快捷键和输入文本；
-- 自动化相关权限：在你明确要求时操作备忘录、日历、提醒事项等系统应用。
+- **macOS**：按系统提示授予麦克风、辅助功能与输入监控等权限；
+- **Windows**：若有系统防火墙或安全拦截提示，请点击“允许访问”。
 
 ## 从源码运行
 
-环境要求：macOS、Apple Silicon、Node.js 22 或更新版本，以及 npm。
+环境要求：Node.js 22 或更新版本，以及 npm。
 
 ```bash
 git clone https://github.com/forestai123456/Daisy-Voice-Agent.git
@@ -105,27 +107,28 @@ cp .env.example daisy.env
 npm run dev
 ```
 
-构建 DMG：
+### 构建打包
 
-```bash
-npm run dist:mac
-```
+- **构建 macOS (Apple Silicon DMG)**：
+  ```bash
+  npm run dist:mac
+  ```
+- **构建 Windows (x64 Setup.exe)**：
+  ```bash
+  npm run dist:win
+  ```
 
-产物会生成在 `releases/`。`daisy.env` 已被 Git 忽略，并明确排除在安装包之外。
+产物会生成在 `releases/` 目录。`daisy.env` 已被 Git 忽略，并明确排除在安装包之外。
 
 ## 项目结构
 
 ```text
 src/
-├── main/       # 语音会话、ASR、TTS、工具执行、快捷键与 macOS 控制
+├── main/       # 语音会话、ASR、TTS、工具执行、快捷键与系统控制（macOS / Windows）
 ├── preload/    # 主进程与渲染进程之间的受控通信层
 └── renderer/   # 悬浮球、音频采集与设置界面
-assets/         # 应用图标、本地工具与运行时资源
+assets/         # 图标、各平台二进制依赖库（whisper-cli, SwitchAudioSource 等）与运行时资源
 ```
-
-## 功能范围
-
-本仓库聚焦于基础的 macOS 语音助手体验：语音交互、系统控制、工具调用与本地站内搜索。屏幕视觉理解、持续长对话与独立文本展示面板不在此仓库的功能范围内。
 
 ## 隐私与安全
 
